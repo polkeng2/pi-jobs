@@ -19,14 +19,29 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/pi-ai";
 import { type CheckResult, failure, modelCall, type ModelCall, report } from "./report";
 
-const WORKER = "job-scout-spike-subreq";
+const WORKER = "job-scout-spike";
 // Ticket #5: the cheapest practical model, one token out, for counting runs.
 const SUBREQ_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const SUBREQ_FETCH_URL = "https://example.com/";
 const ORCHESTRATOR = "@cf/zai-org/glm-4.7-flash";
 
 /** Check name -> the Spike method that runs it. */
-const CHECKS = { turn: "turn", subrequests: "subrequests" } as const satisfies Record<string, keyof Spike>;
+const CHECKS = { turn: "turn", clef: "clef", subrequests: "subrequests" } as const satisfies Record<string, keyof Spike>;
+
+const CLEF = "@cf/cloudflare/clef";
+// Synthetic data only. Nothing here comes from the owner's real profile or job search.
+const SYNTHETIC_PROFILE =
+  "Candidate: backend engineer, 6 years of TypeScript and Postgres, wants a fully remote role, speaks English.";
+const SYNTHETIC_OFFER =
+  "Senior Backend Engineer at Acme Cloud. Fully remote. TypeScript, Node.js, Postgres. English-speaking team. 5+ years of experience.";
+const CLEF_QUESTIONS = {
+  fit: {
+    type: "score",
+    instructions: "How well do the candidate's skills and experience match the offer?",
+    criteria: ["No match", "Weak match", "Partial match", "Strong match", "Excellent match"],
+  },
+  remote: { type: "noul", instructions: "Is the offer fully remote?" },
+} as const;
 type CheckName = keyof typeof CHECKS;
 
 export class Spike extends DurableObject<Env> {
@@ -126,6 +141,47 @@ export class Spike extends DurableObject<Env> {
         })),
       },
       calls,
+    };
+  }
+
+  /**
+   * Clef takes `state` plus typed `questions`, not chat messages. Path 1: ask pi-ai's
+   * Cloudflare provider to call Clef and record what happens. Path 2: call `env.AI.run`
+   * directly, which is what `score_offers` would do.
+   */
+  async clef(): Promise<CheckResult> {
+    const state = { profile: SYNTHETIC_PROFILE, offer: SYNTHETIC_OFFER };
+
+    let piAi: Record<string, unknown>;
+    try {
+      const msg = await this.ai.complete(this.ai(CLEF), {
+        messages: [{ role: "user", content: JSON.stringify({ state, questions: CLEF_QUESTIONS }), timestamp: Date.now() }],
+      });
+      piAi = {
+        canCallClef: false,
+        reason:
+          "pi-ai builds a chat payload (messages/tools) and reads a chat completion back; it has no way to send `state` + `questions` or read `answers`.",
+        stopReason: msg.stopReason,
+        errorMessage: msg.errorMessage,
+        content: msg.content,
+        usage: msg.usage,
+      };
+    } catch (error) {
+      const e = error instanceof Error ? error : new Error(String(error));
+      piAi = { canCallClef: false, reason: `pi-ai cannot express Clef's request: ${e.message}` };
+    }
+
+    // `model: "clef"` in the body is required by Clef's input schema.
+    const raw = (await this.env.AI.run(CLEF as never, { model: "clef", state, questions: CLEF_QUESTIONS } as never)) as unknown as {
+      answers?: Record<string, unknown>;
+      usage?: Record<string, number>;
+    };
+    const inputTokens = Number(raw.usage?.prompt_tokens ?? raw.usage?.input_tokens ?? 0);
+    const answered = !!raw.answers && "fit" in raw.answers && "remote" in raw.answers;
+    return {
+      verdict: answered ? "pass" : "fail",
+      evidence: { data: "synthetic", piAi, workingPath: "env.AI.run(@cf/cloudflare/clef, { model, state, questions })", raw },
+      calls: [modelCall(CLEF, inputTokens, 0)],
     };
   }
 }
