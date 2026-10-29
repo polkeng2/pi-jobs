@@ -16,7 +16,7 @@ The goal is to learn how an agent harness works by building a minimal one, so ke
 
 ## Current status
 
-The design is done and the spike is done. Its results are in the "Spike outcome" section of `docs/design.md`, and the design body already reflects them. The spike code lives on the `spike` branch and is evidence, not the start of v1. **The next step is the v1 spec.** First settle the open decisions listed in the spike outcome (batch count, CPU, batch size).
+The design is done and the spike is done. Its results are in the "Spike outcome" section of `docs/design.md`, and the design body already reflects them. The spike code lives in `spike/` and is evidence, not the start of v1. **The next step is the v1 spec.** First settle the open decisions listed in the spike outcome (batch count, CPU, batch size).
 
 ## Constraints
 
