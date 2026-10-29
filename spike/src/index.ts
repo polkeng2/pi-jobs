@@ -19,7 +19,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/pi-ai";
 import { type CheckResult, failure, modelCall, type ModelCall, report } from "./report";
 
-const WORKER = "job-scout-spike-clef";
+const WORKER = "job-scout-spike";
 const ORCHESTRATOR = "@cf/zai-org/glm-4.7-flash";
 
 /** Check name -> the Spike method that runs it. */
