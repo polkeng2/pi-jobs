@@ -171,3 +171,73 @@ describe("diagnostic endpoint, check=subrequests", () => {
     expect(report.evidence.succeeded + report.evidence.failures.length).toBe(60);
   }, 120_000);
 });
+
+// Ticket #6: does a run resume after a crash? The test forces the crash itself
+// through check=resume-crash (ctx.abort(): the object is reset, like a crash).
+// The redeploy variant is done by hand; see spike/RESUME.md.
+async function diagQ(query: string) {
+  const res = await fetch(`${base}/diag?${query}`);
+  return { status: res.status, report: (await res.json()) as any };
+}
+
+type Run = { session: string; operationId: string };
+
+async function pollStatus(run: Run, until: (r: any) => boolean, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { report } = await diagQ(`check=resume-status&session=${run.session}&op=${run.operationId}`);
+    if (until(report)) return report;
+    if (Date.now() > deadline) throw new Error(`timed out; last evidence: ${JSON.stringify(report.evidence)}`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+const toolRunning = (tool: string) => (r: any) =>
+  (r.evidence.toolRuns ?? []).some((row: any) => row.tool === tool && row.finishedAt === null);
+
+describe("diagnostic endpoint, check=resume (tools)", () => {
+  it("survives a crash inside each tool and reports which tool calls re-ran", async () => {
+    const { status, report: started } = await diagQ("check=resume-start&mode=tools&holdMs=25000");
+    expect(status).toBe(200);
+    expect(started.verdict).toBe("pass");
+    const run: Run = started.evidence.run;
+    expect(run.session).toMatch(/\S/);
+    expect(run.operationId).toMatch(/\S/);
+
+    // Crash while the safe tool is mid-execution, then while the effectful one is.
+    await pollStatus(run, toolRunning("check_inventory"), 120_000);
+    expect((await diagQ("check=resume-crash")).report.evidence.crashed).toBe(true);
+    await pollStatus(run, toolRunning("place_order"), 300_000);
+    expect((await diagQ("check=resume-crash")).report.evidence.crashed).toBe(true);
+
+    const done = await pollStatus(run, (r) => r.evidence.settled === true, 300_000);
+    const e = done.evidence;
+    expect(e.interrupted).toBe(true);
+    expect(e.instances.length).toBeGreaterThanOrEqual(2);
+    expect(typeof e.sameConversation).toBe("boolean");
+    expect(e.reRuns.check_inventory.replay).toBe("safe");
+    expect(e.reRuns.place_order.replay).toBe("unsafe");
+    for (const tool of ["check_inventory", "place_order"]) {
+      expect(typeof e.reRuns[tool].reExecutedSameCall).toBe("boolean");
+      expect(typeof e.reRuns[tool].modelCalledAgain).toBe("boolean");
+    }
+    expect(done.verdict).toBe("pass");
+  }, 800_000);
+});
+
+describe("diagnostic endpoint, check=resume (stream)", () => {
+  it("survives a crash mid model stream and reports how the stream behaved", async () => {
+    const { report: started } = await diagQ("check=resume-start&mode=stream");
+    const run: Run = started.evidence.run;
+    await pollStatus(run, (r) => (r.evidence.modelCalls ?? []).some((c: any) => c.finishedAt === null && c.chunks > 0), 120_000);
+    expect((await diagQ("check=resume-crash")).report.evidence.crashed).toBe(true);
+
+    const done = await pollStatus(run, (r) => r.evidence.settled === true, 300_000);
+    const s = done.evidence.stream;
+    expect(s.attempts).toBeGreaterThanOrEqual(1);
+    expect(typeof s.retried).toBe("boolean");
+    expect(typeof s.possibleDoubleBilling).toBe("boolean");
+    expect(s.behaviour).toMatch(/\S/);
+    expect(done.verdict).toBe("pass");
+  }, 800_000);
+});

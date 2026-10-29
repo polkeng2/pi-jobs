@@ -10,6 +10,9 @@
 // Durable Object (`Spike`, name "spike"), which hosts Pi Durable through
 // PiHarness (ADR 0001). To add a check (#3, #4, #5), add a method to `Spike`
 // that returns a CheckResult and list it in CHECKS.
+//
+// Ticket #6 (resume) is three checks: resume-start, resume-crash, resume-status.
+// The procedure is in spike/RESUME.md.
 import { DurableObject } from "cloudflare:workers";
 import { type AssistantMessage, Type } from "@earendil-works/pi-ai";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
@@ -29,7 +32,26 @@ const SUBREQ_FETCH_URL = "https://example.com/";
 const ORCHESTRATOR = "@cf/zai-org/glm-4.7-flash";
 
 /** Check name -> the Spike method that runs it. */
-const CHECKS = { turn: "turn", clef: "clef", subrequests: "subrequests", tool: "tool", "tool-interpreted": "toolInterpreted" } as const satisfies Record<string, keyof Spike>;
+const CHECKS = {
+  turn: "turn",
+  clef: "clef",
+  subrequests: "subrequests",
+  tool: "tool",
+  "tool-interpreted": "toolInterpreted",
+  "resume-start": "resumeStart",
+  "resume-status": "resumeStatus",
+  "resume-crash": "resumeCrash",
+} as const satisfies Record<string, keyof Spike>;
+
+// Ticket #6. Synthetic warehouse: one replay-safe read, one effectful write.
+// Each tool holds for `holdMs` so a crash or redeploy can land mid-execution
+// (a deploy gives in-flight work ~30 s, so hold longer than that for a redeploy).
+const RESUME_PROMPTS = {
+  tools:
+    'Synthetic test data. Step 1: call check_inventory with item "widget". Step 2: after it returns, call place_order with item "widget" and quantity 2. Call one tool at a time. Step 3: reply with the single word DONE.',
+  stream: "Write a plain-text story of about 400 words about a lighthouse keeper. Do not call any tools.",
+} as const;
+const RESUME_DEFAULT_HOLD_MS = 60_000;
 
 const CLEF = "@cf/cloudflare/clef";
 // Synthetic data only. Nothing here comes from the owner's real profile or job search.
@@ -52,9 +74,15 @@ type CheckName = keyof typeof CHECKS;
 const addParameters = () => Type.Object({ a: Type.Integer(), b: Type.Integer() });
 
 export class Spike extends DurableObject<Env> {
+  /** A new id per object instance: a crash or redeploy shows up as a new instance. */
+  instance = crypto.randomUUID().slice(0, 8);
+  sql = this.ctx.storage.sql;
+  tablesReady = createResumeTables(this.sql);
+
   // Model metadata goes on createAI's model, not per call: per-model options
   // are symbol keys and do not survive into stored sessions.
-  ai = createAI({ binding: this.env.AI });
+  // The binding is wrapped only to record each model call (ticket #6).
+  ai = createAI({ binding: this.recordingBinding() });
   model = this.ai(ORCHESTRATOR, { cost: { input: 0.06, output: 0.4, cacheRead: 0, cacheWrite: 0 } });
 
   harness = new PiHarness({
@@ -76,6 +104,37 @@ export class Spike extends DurableObject<Env> {
           ),
         }),
       );
+      registry.install(
+        defineExtension({
+          name: "spike-resume-tools",
+          tools: [
+            defineTool({
+              name: "check_inventory",
+              description: "Read how many units of an item are in stock. Read-only.",
+              parameters: Type.Object({ item: Type.String({ description: "Item name" }) }),
+              replay: "safe",
+              executionMode: "sequential",
+              execute: async (args, api) => {
+                await this.holdTool("check_inventory", "safe", api);
+                return { output: [{ type: "text", text: `${args.item}: 12 in stock` }] };
+              },
+            }),
+            defineTool({
+              name: "place_order",
+              description: "Place an order for an item. Each call places a new order.",
+              parameters: Type.Object({
+                item: Type.String({ description: "Item name" }),
+                quantity: Type.Integer({ description: "Units to order" }),
+              }),
+              executionMode: "sequential",
+              execute: async (args, api) => {
+                await this.holdTool("place_order", "unsafe", api);
+                return { output: [{ type: "text", text: `order ${api.callId} placed: ${args.quantity} x ${args.item}` }] };
+              },
+            }),
+          ],
+        }),
+      );
       const models = createModels();
       models.setProvider(this.ai.provider);
       return Harness.open(storage, { models, registry, onWake }, context);
@@ -91,7 +150,245 @@ export class Spike extends DurableObject<Env> {
   /** RPC entry point. Native RPC bypasses fetch, so Lifecycle must be started by hand. */
   async run(check: CheckName, params: Record<string, string> = {}): Promise<CheckResult> {
     await this.lifecycle.start();
-    return check === "subrequests" ? this.subrequests(params) : this[CHECKS[check] as "turn"]();
+    return (this[CHECKS[check]] as (p: Record<string, string>) => Promise<CheckResult>).call(this, params);
+  }
+
+  /** The AI binding, recording every `run` in spike_model_calls: start, chunks streamed, end. */
+  private recordingBinding(): Ai {
+    const target = this.env.AI;
+    const sql = this.sql;
+    const run = async (model: string, inputs: any, options?: any) => {
+      const id = sql
+        .exec<{ id: number }>(
+          "INSERT INTO spike_model_calls (model, instance, started_at, streamed, chunks) VALUES (?, ?, ?, ?, 0) RETURNING id",
+          model,
+          this.instance,
+          Date.now(),
+          inputs?.stream ? 1 : 0,
+        )
+        .one().id;
+      const finish = () => void sql.exec("UPDATE spike_model_calls SET finished_at = ? WHERE id = ?", Date.now(), id);
+      // agents' transport asks for returnRawResponse, so a stream comes back as a Response body.
+      const out: unknown = await target.run(model as never, inputs, options);
+      const count = () =>
+        new TransformStream({
+          transform(chunk, controller) {
+            sql.exec("UPDATE spike_model_calls SET chunks = chunks + 1 WHERE id = ?", id);
+            controller.enqueue(chunk);
+          },
+          flush: finish,
+        });
+      if (out instanceof Response && out.body) return new Response(out.body.pipeThrough(count()), out);
+      if (out instanceof ReadableStream) return out.pipeThrough(count());
+      finish();
+      return out;
+    };
+    return new Proxy(target, {
+      get(t, prop) {
+        if (prop === "run") return run;
+        const value = Reflect.get(t, prop);
+        return typeof value === "function" ? value.bind(t) : value;
+      },
+    });
+  }
+
+  /** Body of both resume tools: record the execution in our own table, then hold. */
+  private async holdTool(tool: string, replay: "safe" | "unsafe", api: { conversationId: unknown; callId: string }) {
+    const session = String(api.conversationId);
+    const holdMs =
+      this.sql.exec<{ hold_ms: number }>("SELECT hold_ms FROM spike_resume_runs WHERE session = ?", session).toArray()[0]
+        ?.hold_ms ?? 0;
+    const id = this.sql
+      .exec<{ id: number }>(
+        "INSERT INTO spike_tool_runs (session, tool, replay, call_id, instance, started_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        session,
+        tool,
+        replay,
+        api.callId,
+        this.instance,
+        Date.now(),
+      )
+      .one().id;
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
+    this.sql.exec("UPDATE spike_tool_runs SET finished_at = ? WHERE id = ?", Date.now(), id);
+  }
+
+  /**
+   * Ticket #6, step 1. Start a run in a fresh session with submit(), and return
+   * at once: the run goes on in the Lifecycle alarm, where a crash can hit it.
+   */
+  async resumeStart(params: Record<string, string>): Promise<CheckResult> {
+    const mode = params.mode === "stream" ? "stream" : "tools";
+    const holdMs = Math.min(Math.max(Number(params.holdMs ?? RESUME_DEFAULT_HOLD_MS) || 0, 0), 180_000);
+    const session = await this.harness.sessions.create();
+    const operationId = `resume-${mode}-${Date.now()}`;
+    // Before submit(), so the tools can read their hold.
+    this.sql.exec(
+      "INSERT INTO spike_resume_runs (session, operation_id, mode, hold_ms, started_at, instance) VALUES (?, ?, ?, ?, ?, ?)",
+      session.id,
+      operationId,
+      mode,
+      holdMs,
+      Date.now(),
+      this.instance,
+    );
+    const receipt = await session.submit(RESUME_PROMPTS[mode], { operationId });
+    return {
+      verdict: receipt.accepted ? "pass" : "fail",
+      evidence: { ranIn: "durable-object", run: { session: session.id, operationId, mode, holdMs }, receipt, instance: this.instance },
+    };
+  }
+
+  /** Ticket #6, the crash: ctx.abort() resets this object at once, like an uncaught crash. */
+  async resumeCrash(): Promise<CheckResult> {
+    this.sql.exec("INSERT INTO spike_crashes (instance, at) VALUES (?, ?)", this.instance, Date.now());
+    await this.ctx.storage.sync();
+    this.ctx.abort("spike: forced crash (ticket #6)");
+    return { verdict: "fail", evidence: { crashed: false, error: "ctx.abort() returned" } };
+  }
+
+  /**
+   * Ticket #6, step 2. Read where a run stands, without waiting: pi's view
+   * (pending, result, transcript) next to ours (tool executions, model calls,
+   * crashes, object instances). Poll it until `settled`.
+   */
+  async resumeStatus(params: Record<string, string>): Promise<CheckResult> {
+    // Without `session`, the latest run (handy when repeating the procedure by hand).
+    const run = this.sql
+      .exec<{ session: string; operation_id: string; mode: string; hold_ms: number; started_at: number; instance: string }>(
+        params.session
+          ? "SELECT * FROM spike_resume_runs WHERE session = ?"
+          : "SELECT * FROM spike_resume_runs ORDER BY started_at DESC LIMIT 1",
+        ...(params.session ? [params.session] : []),
+      )
+      .toArray()[0];
+    if (!run) return { verdict: "fail", evidence: { error: `no resume run for session "${params.session}"` } };
+    const operationId = params.op ?? run.operation_id;
+    const next =
+      this.sql
+        .exec<{ t: number | null }>("SELECT MIN(started_at) AS t FROM spike_resume_runs WHERE started_at > ?", run.started_at)
+        .one().t ?? Number.MAX_SAFE_INTEGER;
+
+    const pending = await this.harness.pending({ session: run.session });
+    const mine = pending.find((p) => p.operationId === operationId);
+    let result: unknown = null;
+    if (!mine) {
+      try {
+        result = await this.harness.wait(operationId, { session: run.session, signal: AbortSignal.timeout(3000) });
+      } catch (error) {
+        result = null;
+      }
+    }
+    const settled = !mine && result !== null;
+    const operation = result as { status?: string; reason?: string; text?: string } | null;
+
+    const toolRuns = this.sql
+      .exec<any>("SELECT * FROM spike_tool_runs WHERE session = ? ORDER BY id", run.session)
+      .toArray()
+      .map((r) => ({ tool: r.tool, replay: r.replay, callId: r.call_id, instance: r.instance, startedAt: r.started_at, finishedAt: r.finished_at }));
+    const modelCalls = this.sql
+      .exec<any>("SELECT * FROM spike_model_calls WHERE started_at >= ? AND started_at < ? ORDER BY id", run.started_at, next)
+      .toArray()
+      .map((c) => ({ model: c.model, instance: c.instance, streamed: !!c.streamed, chunks: c.chunks, startedAt: c.started_at, finishedAt: c.finished_at }));
+    const crashes = this.sql
+      .exec<any>("SELECT * FROM spike_crashes WHERE at >= ? AND at < ? ORDER BY at", run.started_at, next)
+      .toArray();
+
+    // Object instances in the order they first did work for this run.
+    const instances = [
+      ...new Set(
+        [{ instance: run.instance, at: run.started_at }, ...toolRuns.map((r) => ({ instance: r.instance, at: r.startedAt })), ...modelCalls.map((c) => ({ instance: c.instance, at: c.startedAt }))]
+          .sort((a, b) => a.at - b.at)
+          .map((x) => x.instance),
+      ),
+    ];
+    const interrupted = crashes.length > 0 || instances.length > 1;
+
+    const entries = await this.harness.messages({ session: run.session });
+    const messages = entries.flatMap((e) => e.model ?? []);
+    const assistants = messages.filter((m): m is AssistantMessage => m.role === "assistant");
+    const toolResults = messages
+      .filter((m) => m.role === "toolResult")
+      .map((m: any) => ({ tool: m.toolName, callId: m.toolCallId, isError: m.isError, text: m.content?.map((c: any) => c.text ?? "").join("") }));
+    const toolCalls = assistants.flatMap((m) =>
+      m.content.flatMap((c) => (c.type === "toolCall" ? [{ id: c.id, name: c.name }] : [])),
+    );
+    const calledIds = toolCalls.map((c) => c.id);
+    const conversationIds = [...new Set(entries.map((e) => String(e.conversationId)))];
+    const promptKept = messages.some(
+      (m) => m.role === "user" && JSON.stringify(m.content).includes(RESUME_PROMPTS[run.mode as "tools"].slice(0, 30)),
+    );
+    const firstInstanceCalls = toolRuns.filter((r) => r.instance === instances[0]).map((r) => r.callId);
+    const sameConversation =
+      promptKept &&
+      conversationIds.length === 1 &&
+      firstInstanceCalls.every((id) => calledIds.includes(id));
+
+    const reRuns = Object.fromEntries(
+      (["check_inventory", "place_order"] as const).map((tool) => {
+        const rows = toolRuns.filter((r) => r.tool === tool);
+        const perCall: Record<string, typeof rows> = {};
+        for (const r of rows) (perCall[r.callId] ??= []).push(r);
+        return [
+          tool,
+          {
+            replay: tool === "check_inventory" ? "safe" : "unsafe",
+            executions: rows.length,
+            executionsPerCall: Object.fromEntries(Object.entries(perCall).map(([id, rs]) => [id, rs?.length ?? 0])),
+            // pi ran the same tool call again after the interruption.
+            reExecutedSameCall: Object.values(perCall).some((rs) => (rs?.length ?? 0) > 1),
+            // The model issued a new call to the tool (a new call id).
+            modelCalledAgain: toolCalls.filter((c) => c.name === tool).length > 1,
+            unfinishedExecutions: rows.filter((r) => r.finishedAt === null).length,
+            results: toolResults.filter((t) => t.tool === tool),
+          },
+        ];
+      }),
+    );
+
+    const streamed = modelCalls.filter((c) => c.streamed);
+    const cut = settled ? streamed.filter((c) => c.finishedAt === null) : [];
+    const stream = {
+      attempts: streamed.length,
+      completed: streamed.filter((c) => c.finishedAt !== null).length,
+      cutOff: cut.map((c) => ({ instance: c.instance, chunksBeforeCut: c.chunks })),
+      retried: cut.length > 0 && streamed.length > cut.length,
+      // A cut stream that had already produced chunks was generated (and billed) and then generated again.
+      possibleDoubleBilling: cut.some((c) => c.chunks > 0),
+      partialAssistantMessagesKept: assistants.filter((m) => m.stopReason !== "stop" && m.stopReason !== "toolUse").length,
+      behaviour:
+        cut.length === 0
+          ? "no model stream was cut off in this run"
+          : `${cut.length} stream(s) cut off after ${cut.map((c) => c.chunks).join(", ")} chunk(s); ${
+              streamed.length > cut.length ? "the call was started again from scratch (retried, not resumed)" : "never retried"
+            }`,
+    };
+
+    const done = settled && operation?.status === "done";
+    return {
+      verdict: done && interrupted && (run.mode === "stream" || sameConversation) ? "pass" : "fail",
+      evidence: {
+        ranIn: "durable-object",
+        instance: this.instance,
+        run: { session: run.session, operationId, mode: run.mode, holdMs: run.hold_ms },
+        settled,
+        pending,
+        operation,
+        interrupted,
+        crashes,
+        instances,
+        sameConversation,
+        conversation: { conversationIds, promptKept, firstInstanceCallsInTranscript: firstInstanceCalls.every((id) => calledIds.includes(id)) },
+        reRuns,
+        toolRuns,
+        modelCalls,
+        stream,
+        transcript: entries.map((e) => ({ id: e.id, kind: e.kind, byTaskId: e.byTaskId })),
+        assistantMessages: assistants.map((m) => ({ stopReason: m.stopReason, usage: m.usage, errorMessage: m.errorMessage, textLength: JSON.stringify(m.content).length })),
+      },
+      // Only the attempts that ended in a message; a cut stream's tokens are not reported.
+      calls: assistants.map((m) => modelCall(m.model, m.usage.input, m.usage.output)),
+    };
   }
 
   /**
@@ -257,6 +554,18 @@ export class Spike extends DurableObject<Env> {
   }
 }
 
+/** Our own tables for ticket #6 (not pi_*): what ran, on which object instance, when. */
+function createResumeTables(sql: SqlStorage): true {
+  sql.exec(`CREATE TABLE IF NOT EXISTS spike_resume_runs (
+    session TEXT PRIMARY KEY, operation_id TEXT, mode TEXT, hold_ms INTEGER, started_at INTEGER, instance TEXT)`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS spike_tool_runs (
+    id INTEGER PRIMARY KEY, session TEXT, tool TEXT, replay TEXT, call_id TEXT, instance TEXT, started_at INTEGER, finished_at INTEGER)`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS spike_model_calls (
+    id INTEGER PRIMARY KEY, model TEXT, instance TEXT, streamed INTEGER, chunks INTEGER, started_at INTEGER, finished_at INTEGER)`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS spike_crashes (instance TEXT, at INTEGER)`);
+  return true;
+}
+
 /** Direct probe of the validator the harness uses: which typebox path, coercion, rejection. */
 function probeValidation() {
   const schema = addParameters();
@@ -295,7 +604,11 @@ export default {
     try {
       result = await env.SPIKE.getByName("spike").run(check as CheckName, Object.fromEntries(url.searchParams));
     } catch (error) {
-      result = failure(error, { ranIn: "worker" });
+      // The crash check works by making the object's call fail.
+      result =
+        check === "resume-crash"
+          ? { verdict: "pass", evidence: { crashed: true, method: "ctx.abort()", error: String(error) } }
+          : failure(error, { ranIn: "worker" });
     }
     return Response.json(report(check, WORKER, startedAt, result));
   },
