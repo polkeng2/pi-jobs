@@ -22,7 +22,7 @@ import { Compile } from "typebox/compile";
 import { Environment, Settings } from "typebox/system";
 import { type CheckResult, failure, modelCall, type ModelCall, report } from "./report";
 
-const WORKER = "job-scout-spike-ajv";
+const WORKER = "job-scout-spike";
 // Ticket #5: the cheapest practical model, one token out, for counting runs.
 const SUBREQ_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const SUBREQ_FETCH_URL = "https://example.com/";
