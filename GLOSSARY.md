@@ -17,7 +17,7 @@ One day's search, made of one or more batches, ending in a digest.
 _Avoid_: job, execution, cycle
 
 **Batch**:
-One round within a scouting run: fetch up to 50 new offers from a query, then score them.
+One round within a scouting run: fetch new offers from a query, then score up to 40 of them.
 _Avoid_: page, chunk, round
 
 **Offer**:
