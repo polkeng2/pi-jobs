@@ -25,6 +25,11 @@ The design is done and the spike is done. Its results are in the "Spike outcome"
 - **The repo is public.** The owner's profile (`profile.md`) and all secrets (`.dev.vars`, bot token, API keys) stay out of git.
 - The owner's existing job-search workspace is at `C:\Users\polke\repos\ai-job-search`. It is a reference for the scoring rubric (`.claude/skills/job-application-assistant/04-job-evaluation.md`) and profile sources. Read from it, but never copy personal data into this repo.
 
+## Working rules
+
+- **Implement with ponytail.** Any implementation work (`/implement`, `/implement-spec`, or a plain request) uses the `ponytail` skill. That includes implementer subagents: their brief tells them to call it alongside `tdd`. If something was built without it, run `ponytail-review` on it before calling the work done.
+- **Explain every change, for learning.** The owner is learning agent architecture and how to build on pi. Before a change, say in a few lines what you will do and why, naming the pi or harness concept it touches (tools, the loop, context, durability, replay, idempotency...). After it, give a short summary of what changed and what it teaches. Keep both brief and in Spanish.
+
 ## Agent skills
 
 ### Issue tracker
