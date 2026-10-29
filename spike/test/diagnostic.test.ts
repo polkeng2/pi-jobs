@@ -65,6 +65,29 @@ describe("diagnostic endpoint, check=turn", () => {
   });
 });
 
+describe("diagnostic endpoint, check=clef", () => {
+  it("scores a synthetic offer with one score and one noul question and records raw answers, usage and neurons", async () => {
+    const { status, report } = await diag("clef");
+    expect(status).toBe(200);
+    expect(report.check).toBe("clef");
+    expect(report.verdict).toBe("pass");
+    // The report says whether pi-ai can call Clef, and why.
+    expect(typeof report.evidence.piAi.canCallClef).toBe("boolean");
+    expect(report.evidence.piAi.reason).toMatch(/\S/);
+    // The working path returns an answer for both questions, raw.
+    expect(report.evidence.workingPath).toMatch(/\S/);
+    const { answers, usage } = report.evidence.raw;
+    expect(answers).toHaveProperty("fit");
+    expect(answers).toHaveProperty("remote");
+    expect(usage).toBeTruthy();
+    // Neurons for the Clef call are recorded.
+    expect(report.neurons.calls[0].model).toBe("@cf/cloudflare/clef");
+    expect(report.neurons.total).toBeGreaterThan(0);
+    // Synthetic data only.
+    expect(report.evidence.data).toBe("synthetic");
+  }, 120_000);
+});
+
 describe("repo hygiene", () => {
   it("every @earendil-works package and agents is pinned exactly in package.json", () => {
     const pkg = JSON.parse(readFileSync(here("../package.json"), "utf8"));
