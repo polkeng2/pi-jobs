@@ -2,7 +2,7 @@
 
 A running guide to building Job Scout on pi. Vocabulary follows [GLOSSARY.md](../GLOSSARY.md). Runtime: [ADR 0001](adr/0001-pi-durable-on-piharness.md). Scope: [design.md](design.md).
 
-**Status: first version, 2026-10-29.** Written from primary sources only. pi 1.0 shipped on 2026-10-01, so the guidance is young and some of it will change. Pi Durable is experimental: its README says the API "changes without notice between releases". Re-check every practice against the pinned version before relying on it.
+**Status: first version, 2026-10-29, plus the spike's learnings (last section).** The numbered sections are written from primary sources. pi 1.0 shipped on 2026-10-01, so the guidance is young and some of it will change. Pi Durable is experimental: its README says the API "changes without notice between releases". Re-check every practice against the pinned version before relying on it.
 
 Versions this was checked against: `@earendil-works/pi-ai`, `pi-agent-core`, `pi-durable` and `chord` 1.4.0 (npm `latest` on 2026-10-29, published 2026-10-21). Cloudflare `agents` 0.31.0, which supports Pi 1.4 (needs 0.30.0+).
 
@@ -11,7 +11,7 @@ Versions this was checked against: `@earendil-works/pi-ai`, `pi-agent-core`, `pi
 Every practice carries a tag and a source.
 
 - **[Official]** means the project's own docs, README or published package say it. The source is linked.
-- **[Spike]** means learned by running it in the spike. None yet; see the last section.
+- **[Spike]** means learned by running it in the spike on a deployed free-plan Worker. These are collected in the last section, which says what each one confirms or contradicts.
 - **[Silent]** means the sources say nothing, and the entry says so plainly instead of guessing.
 
 Sources:
@@ -49,7 +49,8 @@ The design worries that validation calls `new Function()`. What the published pa
 
 - pi-ai 1.4.0 and pi-durable 1.4.0 depend on `typebox@1.3.27`. Neither depends on AJV. **[Official]** npm package manifests.
 - pi-ai validates with `Compile` from `typebox/compile`. In typebox, `Compile` builds an evaluated (code-generated) check only when `Environment.CanEvaluate()` is true. That function tries `new Function` once and also honours `Settings.useAcceleration`. If evaluation is refused it falls back to a dynamic (interpreted) check. **[Official]** published `typebox@1.3.27` source, `build/schema/build.mjs` and `build/system/environment/evaluate.mjs`.
-- So the likely answer is that tools work in Workers, with or without `new Function`. The claim about AJV probably concerns older pi versions or another package. **This is a reading of source, not a test.** The spike still has to run it on a deployed Worker. If it fails, `Settings.Set({ useAcceleration: false })` in typebox is the first thing to try.
+- So the likely answer is that tools work in Workers, with or without `new Function`. The claim about AJV probably concerns older pi versions or another package. If it fails, `Settings.Set({ useAcceleration: false })` in typebox is the first thing to try.
+- **Answered by the spike: tools work.** On workerd `new Function` is refused, so validation always takes the interpreted path. See S1 below.
 
 ## 2. Durability
 
@@ -57,7 +58,8 @@ The design worries that validation calls `new Function()`. What the published pa
    - For Job Scout: `search_offers` and `score_offers` are candidates for `replay: "safe"`, as long as scoring writes are idempotent. `send_digest` must not be safe.
 2. **A safe tool with outside effects still needs its own idempotency.** The README says so for nested calls and gives no general mechanism for tools. For Telegram, key sends and edits yourself, for example by offer id and run id, stored in our own tables. **[Official]** Durable README. The mechanism itself is **[Silent]**.
 3. **Intent is committed before `execute()` runs.** Each call is its own durable task. Plan on "at least once" for safe tools and "at most once" for the rest. **[Official]** Durable README.
-4. **Make every input idempotent with an id that survives retries.** In the Durable README the key is `requestId` on `submit()`; resubmitting the same `requestId` returns the existing submission. In CF-Pi the key is called `operationId` and resubmitting returns the existing operation with `accepted: false`. For Telegram taps, use the callback id. The two docs name the field differently, so check the pinned type definitions. **[Official]** CF-Pi, Durable.
+4. **Make every input idempotent with an id that survives retries.** In the Durable README the key is `requestId` on `submit()`; resubmitting the same `requestId` returns the existing submission. In CF-Pi the key is called `operationId` and resubmitting returns the existing operation with `accepted: false`. For Telegram taps, use the callback id. **[Official]** CF-Pi, Durable.
+   - **Resolved: both names are right, at different layers.** `requestId` is the field on pi-durable's own `Harness` (`root.submit(...)`, `submissionByRequest` in its `types.d.ts`). `PiHarness` in `agents` 0.31.0 wraps it and exposes `operationId`: `session.submit(input, { operationId })` returns a `PiReceipt { operationId, session, accepted }`. Job Scout talks to `PiHarness`, so it uses `operationId`. **[Spike]** pinned `.d.ts` files, `check=resume-start`.
 5. **Use `submit()` then `wait()` for long work, `prompt()` only for short.** `submit()` stores the input durably and returns a receipt; `wait(operationId)` returns `done` or `unanswered`. **[Official]** CF-Pi.
 6. **Input sent while the session is busy queues by default.** `whenBusy: "steer"` or `session.steer()` joins the current run after its current tool round. **[Official]** CF-Pi.
 7. **Record non-user input with `entry`.** Use your own `kind` (start it with `app.`; `pi.` is reserved). It is a label, not a permission check. **[Official]** CF-Pi.
@@ -145,19 +147,46 @@ Pi docs say little about the free plan. These are the relevant official facts.
 2. **Set up the Worker as documented.** Compatibility date, `nodejs_compat`, an `ai` binding named `AI`, and a SQLite-backed Durable Object class. Register the provider with `createModels()` then `models.setProvider(ai.provider)`. **[Official]** CF-Pi, CF-PiAI.
 3. **The harness factory must be idempotent.** It runs at startup and again after a storage-error reopen. Pass `onWake` through to `Harness.open()`. **[Official]** CF-Pi.
 4. **In Workers, idle-eviction timers are declined** so that a Durable Object can hibernate (fixed in pi-durable 1.4.0). **[Official]** pi-durable 1.4.0 changelog.
-5. **Clef is not a chat model.** The pi-ai Cloudflare provider documents `complete`, `stream`, `ai.images` and nothing for Clef. Whether it can send `state` plus `questions` is spike check 4. **[Silent]**
-6. **Cloudflare pi-ai docs show `@cf/zai-org/glm-5.3-flash`** in examples; design.md uses `glm-4.7-flash`. Confirm the exact id the platform serves. **[Official]** CF-PiAI.
+5. **Clef is not a chat model.** The pi-ai Cloudflare provider documents `complete`, `stream`, `ai.images` and nothing for Clef. **[Silent]** The spike showed pi-ai cannot call it; see S8.
+6. **Cloudflare pi-ai docs show `@cf/zai-org/glm-5.3-flash`** in examples; design.md uses `glm-4.7-flash`. **[Official]** CF-PiAI. `@cf/zai-org/glm-4.7-flash` is served and works through `createAI({ binding })`. **[Spike]**
 
 ## Open questions the sources leave unanswered
 
-- Whether pi tool validation works in Workers (source says likely yes; untested).
-- Whether `AI` binding calls count toward the 50-subrequest limit, and how pi's own calls count.
+- ~~Whether pi tool validation works in Workers.~~ Yes (S1).
+- ~~Whether `AI` binding calls count toward the 50-subrequest limit, and how pi's own calls count.~~ They count; pi adds none (S5).
+- ~~Which of `requestId` and `operationId` the pinned `PiHarness` API exposes.~~ `operationId` (section 2.4).
 - The Harmony/gpt-oss malformed-call handling.
 - How `reset()` versus compaction behaves over many batches.
-- Which of `requestId` and `operationId` the pinned `PiHarness` API exposes.
-- A general idempotency pattern for effectful tools.
-- Behavior when the same alarm wake runs both pi's heartbeat and our batch work.
+- A general idempotency pattern for effectful tools. The spike showed why one is needed (S10); the pattern is our own (design.md, Telegram).
+- How pi spreads one run's turns across alarm invocations, and whether the alarm invocation has the same 50-subrequest limit as an RPC call.
+- Clef's cost per question: is the `state` counted once per call or once per question?
 
 ## Spike learnings
 
-_To be filled by ticket #8. Each entry should be tagged **[Spike]**, say which section above it confirms or contradicts, and link the evidence. Leave this section empty until then._
+Learned on deployed free-plan Workers on 2026-10-29, with the versions pinned in `spike/package.json` (pi-* and `chord` 1.4.0, `agents` 0.31.0, `typebox` 1.3.27). The evidence is the spike code on the `spike` branch (`spike/src/index.ts`, `spike/RESUME.md`) and the `GET /diag?check=<name>` reports; issue numbers point at the write-up for each check. Not official guidance.
+
+**Tools**
+
+- **S1. Tool validation works in Workers, on the interpreted path.** On workerd `Environment.CanEvaluate()` is false even with `useAcceleration: true`, so typebox never builds an evaluated check; `Compile(...).IsAccelerated()` is false. Setting `useAcceleration: false` changes nothing. Coercion and rejection behave as in section 1.8 (`"3"` → 3; `{ a: "x" }` → "a: must be integer"). Confirms section 1 and the AJV reading. **[Spike]** `check=tool`, `check=tool-interpreted`; #3.
+- **S2. Pass the tool registry to `Harness.open`.** Without `registry` in its options the model saw no tools at all (27 input tokens) and nothing failed loudly. **[Spike]** #3. Not in the sources.
+- **S3. typebox validators are cached per schema object** (a `WeakMap`). Testing a different validator setting needs a separate schema object. To import `typebox/system`, typebox must be a direct, exactly pinned dependency (1.3.27). **[Spike]** #3.
+- **S4. A tool turn costs two model calls.** One call to choose the tool, one to read its result: about 270 + 400 input tokens, ~9 neurons and ~5 s with GLM-4.7-Flash. **[Spike]** #3.
+
+**Workers and the free plan**
+
+- **S5. `AI` binding calls are subrequests.** They share the 50 per invocation with `fetch`; call 51 throws "Too many subrequests by single Worker invocation" whatever the mix. Lifecycle and RPC overhead add none, so exactly 50 are usable. A caught subrequest error does not appear as an exception in `wrangler tail`. Fills the gap noted in section 2. **[Spike]** `check=subrequests&ai=N&fetches=M`; #5. Only the RPC invocation was measured, not the alarm invocation.
+- **S6. The 10 ms CPU figure is exceeded and not enforced (today).** Durable Object RPC invocations used 13-51 ms, alarm invocations with model work 21-74 ms; none was killed. Fills the gap noted in section 2. **[Spike]** `wrangler tail`; #2, #5.
+- **S7. Setup gotchas.** Call `Lifecycle.start()` by hand inside Durable Object RPC methods, because native RPC bypasses `fetch`. `sessions.create()` returns string ids that keep counting across sessions and deploys. `Date.now()` in a Durable Object does not advance during CPU-only work, only across I/O. The bundle is 504 KB gzip (pi-ai pulls in several provider SDKs) with 25 ms startup. npm 11 skips install scripts; `npm ci --ignore-scripts` works and `wrangler deploy` still runs. **[Spike]** #2, #6.
+- **S8. pi-ai cannot call Clef.** It sends a chat payload; the platform answers "required properties at '/' are 'model,state,questions'", and the message ends with `stopReason: "error"` and zero usage. Call `env.AI.run("@cf/cloudflare/clef", { model: "clef", state, questions })` directly; `model: "clef"` in the body is required. `usage` is `{ input_tokens, output_tokens: 0 }`, not `prompt_tokens`. **[Spike]** `check=clef`; #4.
+- **S9. Workers AI returns no neuron count, and GLM's reasoning is billed but not split out.** Compute neurons from tokens × the pricing-page rates. GLM-4.7-Flash answered "reply pong" with 15 input and 143 output tokens (~5.3 neurons), and `usage.reasoning` is undefined. pi-ai fills `usage.cost` only if a `cost` is set in the model metadata. **[Spike]** #2. Relates to section 3.3.
+
+**Durability**
+
+- **S10. After a crash, pi resumes as documented, and the effectful tool's outcome is lost to the run.** Forced with `ctx.abort()`, the alarm restarted the object in ~0.4 s and the run carried on in the same conversation (`api.conversationId` equals the `PiSession` id). The `replay: "safe"` tool ran again with the same call id. The unsafe one was not re-run; the model got `isError` "Tool place_order was interrupted and may have partially run", did not call it again, and ended the run. So the run never finished the effect, and the transcript cannot say whether it happened. Reconcile from our own tables. Confirms sections 2.1 and 2.3. **[Spike]** `check=resume-start/-crash/-status`, `spike/RESUME.md`; #6.
+- **S11. An interrupted stream is retried from scratch and billed twice, and the cut attempt is invisible in usage.** The partial assistant message stays in the transcript with `stopReason: "aborted"` and all-zero usage; a new binding call then streams the whole answer. Confirms section 2.9 and adds that usage undercounts. **[Spike]** `check=resume-*&mode=stream`; #6.
+- **S12. A redeploy does not interrupt a busy Durable Object.** Twice, the object running a run kept the old code and finished tool holds of 60 s and 150 s about 5 minutes after the deploy; a new instance appeared only once the run had settled. SQLite survived. This contradicts section 2.8's "deploys give in-flight work 30 seconds" as observed on the free plan. To test resume, force a crash with `ctx.abort()`. **[Spike]** `spike/RESUME.md` procedure A; #6.
+- **S13. The binding transport returns a raw `Response`.** `agents` calls `env.AI.run(model, input, { returnRawResponse: true })`. To observe or count a model stream, wrap the `AI` binding and the response body. **[Spike]** #6.
+
+**Sources**
+
+- **S14. The pi repo is `github.com/earendil-works/pi`.** `badlogic/pi-mono` is the old name; docs live under `packages/coding-agent/docs`. **[Spike]** #7.

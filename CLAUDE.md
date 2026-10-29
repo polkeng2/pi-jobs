@@ -16,11 +16,11 @@ The goal is to learn how an agent harness works by building a minimal one, so ke
 
 ## Current status
 
-The design is done. No code exists yet. **The next step is the spike** in `docs/design.md`: a minimal deployed Worker that verifies AJV, subrequest counting, PiHarness resume and calling Clef, plus a first pass at pi best practices. Build the real thing only after the spike passes or the design is adjusted.
+The design is done and the spike is done. Its results are in the "Spike outcome" section of `docs/design.md`, and the design body already reflects them. The spike code lives on the `spike` branch and is evidence, not the start of v1. **The next step is the v1 spec.** First settle the open decisions listed in the spike outcome (batch count, CPU, batch size).
 
 ## Constraints
 
-- **Target the Cloudflare free plan.** The design is sized to 50 subrequests and 10 ms CPU per invocation and 10k neurons/day. Do not assume Workers Paid.
+- **Target the Cloudflare free plan.** The design is sized to 50 subrequests per invocation (`AI` binding calls count) and 10k neurons/day. The 10 ms CPU figure is exceeded in practice (13-74 ms) without being enforced; see the spike outcome. Do not assume Workers Paid.
 - **Pin `@earendil-works/pi-*` versions exactly**, because pi-durable is experimental.
 - **The repo is public.** The owner's profile (`profile.md`) and all secrets (`.dev.vars`, bot token, API keys) stay out of git.
 - The owner's existing job-search workspace is at `C:\Users\polke\repos\ai-job-search`. It is a reference for the scoring rubric (`.claude/skills/job-application-assistant/04-job-evaluation.md`) and profile sources. Read from it, but never copy personal data into this repo.
