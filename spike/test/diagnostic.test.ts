@@ -42,6 +42,7 @@ describe("diagnostic endpoint, check=turn", () => {
         "@earendil-works/pi-durable",
         "@earendil-works/chord",
         "agents",
+        "typebox",
       ]),
     );
     for (const name of names) expect(report.versions[name]).toMatch(EXACT);
@@ -62,6 +63,12 @@ describe("diagnostic endpoint, check=turn", () => {
     expect(status).toBe(404);
     expect(report.verdict).toBe("fail");
     expect(report.evidence.knownChecks).toContain("turn");
+  });
+
+  it("does not treat Object.prototype names as checks", async () => {
+    const { status, report } = await diag("toString");
+    expect(status).toBe(404);
+    expect(report.verdict).toBe("fail");
   });
 });
 
@@ -125,7 +132,7 @@ describe("repo hygiene", () => {
     const pkg = JSON.parse(readFileSync(here("../package.json"), "utf8"));
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
     for (const [name, range] of Object.entries(deps)) {
-      if (name.startsWith("@earendil-works/") || name === "agents") expect(range).toMatch(EXACT);
+      if (name.startsWith("@earendil-works/") || name === "agents" || name === "typebox") expect(range).toMatch(EXACT);
     }
   });
 
@@ -164,6 +171,15 @@ describe("diagnostic endpoint, check=subrequests", () => {
     expect(report.evidence.firstFailure === null || typeof report.evidence.firstFailure.error === "string").toBe(true);
     expect(typeof report.evidence.aiCallsCountTowardLimit).toBe("boolean");
   }, 120_000);
+
+  it.each(["abc", "-3"])("rejects a non-numeric or negative count (%s) with a failing report", async (bad) => {
+    for (const query of [`ai=${bad}&fetches=0`, `ai=0&fetches=${bad}`]) {
+      const res = await fetch(`${base}/diag?check=subrequests&${query}`);
+      const report = (await res.json()) as any;
+      expect(report.verdict).toBe("fail");
+      expect(report.evidence.error).toMatch(/\S/);
+    }
+  }, 60_000);
 
   it("a mixed run above 50 accounts for every call", async () => {
     const { report } = await subrequests(20, 40);

@@ -7,7 +7,7 @@
 //     "worker":   "job-scout-spike",              // which deployed Worker answered
 //     "verdict":  "pass" | "fail",
 //     "evidence": { ... },                        // raw facts: replies, errors, counts
-//     "versions": { "@earendil-works/pi-ai": "1.4.0", ..., "agents": "0.31.0" },
+//     "versions": { "@earendil-works/pi-ai": "1.4.0", ..., "agents": "0.31.0", "typebox": "1.3.27" },
 //     "neurons":  { "total": 12.3, "source": "...", "calls": [ { model, inputTokens, outputTokens, neurons } ] },
 //     "startedAt": "2026-10-29T...Z",
 //     "durationMs": 1234
@@ -64,11 +64,11 @@ export function modelCall(model: string, inputTokens: number, outputTokens: numb
   return { model, inputTokens, outputTokens, neurons: round(neurons) };
 }
 
-/** The exact pins this Worker was built with: every @earendil-works/* dependency plus `agents`. */
+/** The exact pins this Worker was built with: every @earendil-works/* dependency plus `agents` and `typebox`. */
 export function pinnedVersions(): Record<string, string> {
   const deps: Record<string, string> = pkg.dependencies;
   return Object.fromEntries(
-    Object.entries(deps).filter(([name]) => name.startsWith("@earendil-works/") || name === "agents"),
+    Object.entries(deps).filter(([name]) => name.startsWith("@earendil-works/") || name === "agents" || name === "typebox"),
   );
 }
 

@@ -17,7 +17,7 @@ conversation, and which tool calls run again?
   instance gets a random id, so a restart shows up as a new instance in the rows.
 - `mode=stream` starts a run with no tools that asks for a ~400-word story, to
   catch a model stream mid-flight. The `AI` binding is wrapped to record each
-  call in `spike_model_calls`: instance, chunks streamed, and whether it finished.
+  call in `spike_model_calls`: instance, chunks streamed (saved on the first chunk and every 20th, so a cut stream is accurate to within 20), and whether it finished or errored.
 - `GET /diag?check=resume-crash` calls `ctx.abort()` on the object. This resets
   it at once, with no grace period, like an uncaught crash.
 - `GET /diag?check=resume-status` (optionally `&session=<id>`; default is the

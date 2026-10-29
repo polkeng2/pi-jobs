@@ -25,6 +25,8 @@ import { Compile } from "typebox/compile";
 import { Environment, Settings } from "typebox/system";
 import { type CheckResult, failure, modelCall, type ModelCall, report } from "./report";
 
+/** The reason resumeCrash passes to ctx.abort(); the stub call fails with it (or the platform's abort error). */
+const FORCED_CRASH = /spike: forced crash \(ticket #6\)|Durable Object (was )?(reset|aborted)/i;
 const WORKER = "job-scout-spike";
 // Ticket #5: the cheapest practical model, one token out, for counting runs.
 const SUBREQ_MODEL = "@cf/meta/llama-3.2-1b-instruct";
@@ -96,8 +98,8 @@ export class Spike extends DurableObject<Env> {
               name,
               description: "Add two integers a and b and return the sum.",
               parameters: addParameters(),
-              execute: async (args) => {
-                this.received.push(args);
+              execute: async (args, api) => {
+                this.received.get(String(api.conversationId))?.push(args);
                 return { output: [{ type: "text", text: String(args.a + args.b) }] };
               },
             }),
@@ -142,8 +144,16 @@ export class Spike extends DurableObject<Env> {
     defaults: { model: this.model },
   });
 
-  /** Arguments the test tools actually received (after validation). Reset per check. */
-  received: { a: number; b: number }[] = [];
+  /** Arguments the test tools actually received (after validation), per session, so concurrent checks don't mix. */
+  received = new Map<string, { a: number; b: number }[]>();
+
+  /** Tail of the tool-check queue: tool checks flip global typebox Settings, so they run one at a time. */
+  private toolQueue: Promise<unknown> = Promise.resolve();
+  private serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.toolQueue.then(fn, fn);
+    this.toolQueue = run.catch(() => undefined);
+    return run;
+  }
 
   lifecycle = Lifecycle.install(this).use(this.harness);
 
@@ -167,17 +177,38 @@ export class Spike extends DurableObject<Env> {
           inputs?.stream ? 1 : 0,
         )
         .one().id;
-      const finish = () => void sql.exec("UPDATE spike_model_calls SET finished_at = ? WHERE id = ?", Date.now(), id);
+      const finish = (error?: string) =>
+        void sql.exec("UPDATE spike_model_calls SET finished_at = ?, error = ? WHERE id = ?", Date.now(), error ?? null, id);
       // agents' transport asks for returnRawResponse, so a stream comes back as a Response body.
-      const out: unknown = await target.run(model as never, inputs, options);
-      const count = () =>
-        new TransformStream({
+      let out: unknown;
+      try {
+        out = await target.run(model as never, inputs, options);
+      } catch (error) {
+        // A failed call is finished with an error, not a stream cut by a crash (finished_at stays NULL only then).
+        finish(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+        throw error;
+      }
+      // Chunks are counted in memory. The row is written on the first chunk and every 20th after that
+      // (so a stream cut by a crash still shows chunksBeforeCut, to within 20), and exactly at the end.
+      const count = () => {
+        let n = 0;
+        const save = () => void sql.exec("UPDATE spike_model_calls SET chunks = ? WHERE id = ?", n, id);
+        return new TransformStream({
           transform(chunk, controller) {
-            sql.exec("UPDATE spike_model_calls SET chunks = chunks + 1 WHERE id = ?", id);
+            n++;
+            if (n === 1 || n % 20 === 0) save();
             controller.enqueue(chunk);
           },
-          flush: finish,
+          flush() {
+            save();
+            finish();
+          },
+          cancel() {
+            save();
+            finish("stream cancelled by the consumer");
+          },
         });
+      };
       if (out instanceof Response && out.body) return new Response(out.body.pipeThrough(count()), out);
       if (out instanceof ReadableStream) return out.pipeThrough(count());
       finish();
@@ -289,7 +320,7 @@ export class Spike extends DurableObject<Env> {
     const modelCalls = this.sql
       .exec<any>("SELECT * FROM spike_model_calls WHERE started_at >= ? AND started_at < ? ORDER BY id", run.started_at, next)
       .toArray()
-      .map((c) => ({ model: c.model, instance: c.instance, streamed: !!c.streamed, chunks: c.chunks, startedAt: c.started_at, finishedAt: c.finished_at }));
+      .map((c) => ({ model: c.model, instance: c.instance, streamed: !!c.streamed, chunks: c.chunks, error: c.error ?? null, startedAt: c.started_at, finishedAt: c.finished_at }));
     const crashes = this.sql
       .exec<any>("SELECT * FROM spike_crashes WHERE at >= ? AND at < ? ORDER BY at", run.started_at, next)
       .toArray();
@@ -350,7 +381,8 @@ export class Spike extends DurableObject<Env> {
     const cut = settled ? streamed.filter((c) => c.finishedAt === null) : [];
     const stream = {
       attempts: streamed.length,
-      completed: streamed.filter((c) => c.finishedAt !== null).length,
+      completed: streamed.filter((c) => c.finishedAt !== null && !c.error).length,
+      errored: streamed.filter((c) => c.error).length,
       cutOff: cut.map((c) => ({ instance: c.instance, chunksBeforeCut: c.chunks })),
       retried: cut.length > 0 && streamed.length > cut.length,
       // A cut stream that had already produced chunks was generated (and billed) and then generated again.
@@ -396,8 +428,15 @@ export class Spike extends DurableObject<Env> {
    * plain fetches. The verdict is the platform's: the calls it refuses, and its own error.
    */
   async subrequests(params: Record<string, string>): Promise<CheckResult> {
-    const ai = Math.min(Number(params.ai ?? 0), 200);
-    const fetches = Math.min(Number(params.fetches ?? 0), 200);
+    const counts = [params.ai ?? "0", params.fetches ?? "0"].map(Number);
+    if (counts.some((n) => !Number.isInteger(n) || n < 0)) {
+      return {
+        verdict: "fail",
+        evidence: { error: "ai and fetches must be non-negative integers", ai: params.ai, fetches: params.fetches },
+      };
+    }
+    const ai = Math.min(counts[0], 200);
+    const fetches = Math.min(counts[1], 200);
     const calls: ModelCall[] = [];
     const failures: { index: number; kind: "ai" | "fetch"; error: string }[] = [];
     let succeeded = 0;
@@ -424,14 +463,17 @@ export class Spike extends DurableObject<Env> {
       });
     }
     const total = ai + fetches;
+    // Only the platform's own limit error is the evidence we want; any other error is a real failure.
+    const otherErrors = failures.filter((f) => !/Too many subrequests/i.test(f.error));
     return {
-      verdict: failures.length === 0 || total > 50 ? "pass" : "fail",
+      verdict: otherErrors.length === 0 && (failures.length === 0 || total > 50) ? "pass" : "fail",
       evidence: {
         ranIn: "durable-object-rpc",
         attempted: { ai, fetches, total },
         succeeded,
         failures,
         firstFailure: failures[0] ?? null,
+        otherErrors,
         // Only decidable when plain fetches alone cannot reach the limit.
         aiCallsCountTowardLimit: fetches <= 50 && total > 50 ? failures.length > 0 : null,
       },
@@ -470,11 +512,15 @@ export class Spike extends DurableObject<Env> {
 
   /** Tool validation with typebox's defaults (evaluated if the runtime allows). */
   tool(): Promise<CheckResult> {
-    return this.toolTurn("add");
+    return this.serialized(() => this.toolTurn("add"));
   }
 
   /** Same, with typebox acceleration off: forces the interpreted path. */
-  async toolInterpreted(): Promise<CheckResult> {
+  toolInterpreted(): Promise<CheckResult> {
+    return this.serialized(() => this.toolInterpretedTurn());
+  }
+
+  private async toolInterpretedTurn(): Promise<CheckResult> {
     const before = Settings.Get().useAcceleration;
     Settings.Set({ useAcceleration: false });
     try {
@@ -485,24 +531,30 @@ export class Spike extends DurableObject<Env> {
   }
 
   private async toolTurn(toolName: string): Promise<CheckResult> {
-    this.received = [];
     const validation = probeValidation();
     const session = await this.harness.sessions.create();
-    const response = await session.prompt(
-      `Call the ${toolName} tool with a=3 and b=4, then reply with the sum as a number.`,
-    );
+    const received: { a: number; b: number }[] = [];
+    this.received.set(session.id, received);
+    let response;
+    try {
+      response = await session.prompt(
+        `Call the ${toolName} tool with a=3 and b=4, then reply with the sum as a number.`,
+      );
+    } finally {
+      this.received.delete(session.id);
+    }
     const messages = response.messages.flatMap((entry) => entry.model ?? []);
     const assistants = messages.filter((m): m is AssistantMessage => m.role === "assistant");
     const toolResults = messages
       .filter((m) => m.role === "toolResult")
       .map((m: any) => ({ tool: m.toolName, isError: m.isError, content: m.content }));
     return {
-      verdict: response.status === "done" && this.received.length >= 1 && validation.badArgsRejected ? "pass" : "fail",
+      verdict: response.status === "done" && received.length >= 1 && validation.badArgsRejected ? "pass" : "fail",
       evidence: {
         ranIn: "durable-object",
         tool: toolName,
-        toolCalls: this.received.length,
-        receivedArgs: this.received,
+        toolCalls: received.length,
+        receivedArgs: received,
         toolResults,
         reply: response.text,
         operation: { id: response.operationId, status: response.status, reason: response.reason },
@@ -562,6 +614,9 @@ function createResumeTables(sql: SqlStorage): true {
     id INTEGER PRIMARY KEY, session TEXT, tool TEXT, replay TEXT, call_id TEXT, instance TEXT, started_at INTEGER, finished_at INTEGER)`);
   sql.exec(`CREATE TABLE IF NOT EXISTS spike_model_calls (
     id INTEGER PRIMARY KEY, model TEXT, instance TEXT, streamed INTEGER, chunks INTEGER, started_at INTEGER, finished_at INTEGER)`);
+  // Added later: tables created by an earlier deploy lack it.
+  if (!sql.exec<{ name: string }>("PRAGMA table_info(spike_model_calls)").toArray().some((c) => c.name === "error"))
+    sql.exec("ALTER TABLE spike_model_calls ADD COLUMN error TEXT");
   sql.exec(`CREATE TABLE IF NOT EXISTS spike_crashes (instance TEXT, at INTEGER)`);
   return true;
 }
@@ -595,7 +650,7 @@ export default {
 
     const startedAt = Date.now();
     const check = url.searchParams.get("check") ?? "";
-    if (!(check in CHECKS)) {
+    if (!Object.hasOwn(CHECKS, check)) {
       const result = { verdict: "fail", evidence: { error: `unknown check "${check}"`, knownChecks: Object.keys(CHECKS) } } as const;
       return Response.json(report(check, WORKER, startedAt, result), { status: 404 });
     }
@@ -604,9 +659,9 @@ export default {
     try {
       result = await env.SPIKE.getByName("spike").run(check as CheckName, Object.fromEntries(url.searchParams));
     } catch (error) {
-      // The crash check works by making the object's call fail.
+      // The crash check works by making the object's call fail, and only the forced abort counts.
       result =
-        check === "resume-crash"
+        check === "resume-crash" && FORCED_CRASH.test(String(error))
           ? { verdict: "pass", evidence: { crashed: true, method: "ctx.abort()", error: String(error) } }
           : failure(error, { ranIn: "worker" });
     }
