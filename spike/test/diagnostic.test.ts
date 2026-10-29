@@ -65,6 +65,38 @@ describe("diagnostic endpoint, check=turn", () => {
   });
 });
 
+describe.each(["tool", "tool-interpreted"])("diagnostic endpoint, check=%s", (check) => {
+  it("makes the agent call the test tool and shows the validated arguments it received", async () => {
+    const { status, report } = await diag(check);
+    expect(status).toBe(200);
+    expect(report.check).toBe(check);
+    expect(report.verdict).toBe("pass");
+    expect(report.evidence.ranIn).toBe("durable-object");
+    expect(report.evidence.toolCalls).toBeGreaterThanOrEqual(1);
+    // The prompt asks for add(a=3, b=4); validation must hand the tool real integers.
+    expect(report.evidence.receivedArgs[0]).toEqual({ a: 3, b: 4 });
+    expect(report.evidence.reply).toContain("7");
+  }, 120_000);
+
+  it("proves validation ran: it coerces good arguments and rejects bad ones", async () => {
+    const { report } = await diag(check);
+    const v = report.evidence.validation;
+    expect(v.coerced).toEqual({ a: 3, b: 4 });
+    expect(v.badArgsRejected).toBe(true);
+    expect(v.badArgsError).toMatch(/\S/);
+    expect(["evaluated", "interpreted"]).toContain(v.path);
+    expect(typeof v.canEvaluate).toBe("boolean");
+  }, 120_000);
+});
+
+describe("diagnostic endpoint, which typebox path ran", () => {
+  it("with acceleration disabled the interpreted path is used", async () => {
+    const { report } = await diag("tool-interpreted");
+    expect(report.evidence.validation.path).toBe("interpreted");
+    expect(report.evidence.validation.useAcceleration).toBe(false);
+  }, 120_000);
+});
+
 describe("repo hygiene", () => {
   it("every @earendil-works package and agents is pinned exactly in package.json", () => {
     const pkg = JSON.parse(readFileSync(here("../package.json"), "utf8"));

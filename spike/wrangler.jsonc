@@ -2,7 +2,7 @@
   // Spike Worker for issue #2. Later checks (#3, #4, #5) deploy variants of this
   // file under their own `name`.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "job-scout-spike",
+  "name": "job-scout-spike-ajv",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-20",
   "compatibility_flags": ["nodejs_compat"],
