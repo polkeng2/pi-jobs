@@ -51,6 +51,7 @@ export type CheckResult = {
 /** Neurons per million tokens, from https://developers.cloudflare.com/workers-ai/platform/pricing/ (read 2026-10-29). */
 export const NEURON_RATES: Record<string, { input: number; output: number }> = {
   "@cf/zai-org/glm-4.7-flash": { input: 5500, output: 36400 },
+  "@cf/meta/llama-3.2-1b-instruct": { input: 2457, output: 18252 },
   "@cf/cloudflare/clef": { input: 21818, output: 0 },
 };
 

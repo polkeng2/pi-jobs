@@ -83,3 +83,36 @@ describe("repo hygiene", () => {
     expect(JSON.parse(out.slice(out.indexOf("[")))).toEqual([]);
   }, 60_000);
 });
+
+// Ticket #5: do AI binding calls count toward the free plan's 50 subrequests
+// per invocation? The verdict is the platform's: its own limit error, not a counter.
+async function subrequests(ai: number, fetches: number) {
+  const res = await fetch(`${base}/diag?check=subrequests&ai=${ai}&fetches=${fetches}`);
+  return { status: res.status, report: (await res.json()) as any };
+}
+
+describe("diagnostic endpoint, check=subrequests", () => {
+  it("a run below 50 total calls succeeds with every call answered", async () => {
+    const { status, report } = await subrequests(15, 15);
+    expect(status).toBe(200);
+    expect(report.evidence.attempted).toEqual({ ai: 15, fetches: 15, total: 30 });
+    expect(report.evidence.failures).toEqual([]);
+    expect(report.evidence.succeeded).toBe(30);
+    expect(report.verdict).toBe("pass");
+    expect(report.neurons.calls.length).toBe(15);
+  }, 120_000);
+
+  it("a run above 50 AI calls records which call the platform refused and its error", async () => {
+    const { report } = await subrequests(55, 0);
+    expect(report.evidence.attempted.total).toBe(55);
+    // The report states the outcome whichever way it falls; the platform's error is the proof.
+    expect(report.evidence.firstFailure === null || typeof report.evidence.firstFailure.error === "string").toBe(true);
+    expect(typeof report.evidence.aiCallsCountTowardLimit).toBe("boolean");
+  }, 120_000);
+
+  it("a mixed run above 50 accounts for every call", async () => {
+    const { report } = await subrequests(20, 40);
+    expect(report.evidence.attempted.total).toBe(60);
+    expect(report.evidence.succeeded + report.evidence.failures.length).toBe(60);
+  }, 120_000);
+});

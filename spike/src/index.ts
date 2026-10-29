@@ -19,11 +19,14 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/pi-ai";
 import { type CheckResult, failure, modelCall, type ModelCall, report } from "./report";
 
-const WORKER = "job-scout-spike";
+const WORKER = "job-scout-spike-subreq";
+// Ticket #5: the cheapest practical model, one token out, for counting runs.
+const SUBREQ_MODEL = "@cf/meta/llama-3.2-1b-instruct";
+const SUBREQ_FETCH_URL = "https://example.com/";
 const ORCHESTRATOR = "@cf/zai-org/glm-4.7-flash";
 
 /** Check name -> the Spike method that runs it. */
-const CHECKS = { turn: "turn" } as const satisfies Record<string, keyof Spike>;
+const CHECKS = { turn: "turn", subrequests: "subrequests" } as const satisfies Record<string, keyof Spike>;
 type CheckName = keyof typeof CHECKS;
 
 export class Spike extends DurableObject<Env> {
@@ -44,9 +47,57 @@ export class Spike extends DurableObject<Env> {
   lifecycle = Lifecycle.install(this).use(this.harness);
 
   /** RPC entry point. Native RPC bypasses fetch, so Lifecycle must be started by hand. */
-  async run(check: CheckName): Promise<CheckResult> {
+  async run(check: CheckName, params: Record<string, string> = {}): Promise<CheckResult> {
     await this.lifecycle.start();
-    return this[CHECKS[check]]();
+    return check === "subrequests" ? this.subrequests(params) : this[CHECKS[check] as "turn"]();
+  }
+
+  /**
+   * Ticket #5. One invocation (this RPC call) makes `ai` AI binding calls, then `fetches`
+   * plain fetches. The verdict is the platform's: the calls it refuses, and its own error.
+   */
+  async subrequests(params: Record<string, string>): Promise<CheckResult> {
+    const ai = Math.min(Number(params.ai ?? 0), 200);
+    const fetches = Math.min(Number(params.fetches ?? 0), 200);
+    const calls: ModelCall[] = [];
+    const failures: { index: number; kind: "ai" | "fetch"; error: string }[] = [];
+    let succeeded = 0;
+    const attempt = async (index: number, kind: "ai" | "fetch", run: () => Promise<void>) => {
+      try {
+        await run();
+        succeeded++;
+      } catch (error) {
+        failures.push({ index, kind, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+      }
+    };
+    for (let i = 1; i <= ai; i++) {
+      await attempt(i, "ai", async () => {
+        const out = (await this.env.AI.run(SUBREQ_MODEL, { prompt: "hi", max_tokens: 1 })) as {
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        calls.push(modelCall(SUBREQ_MODEL, out.usage?.prompt_tokens ?? 1, out.usage?.completion_tokens ?? 1));
+      });
+    }
+    for (let i = 1; i <= fetches; i++) {
+      await attempt(ai + i, "fetch", async () => {
+        const res = await fetch(`${SUBREQ_FETCH_URL}?n=${i}`);
+        await res.body?.cancel();
+      });
+    }
+    const total = ai + fetches;
+    return {
+      verdict: failures.length === 0 || total > 50 ? "pass" : "fail",
+      evidence: {
+        ranIn: "durable-object-rpc",
+        attempted: { ai, fetches, total },
+        succeeded,
+        failures,
+        firstFailure: failures[0] ?? null,
+        // Only decidable when plain fetches alone cannot reach the limit.
+        aiCallsCountTowardLimit: fetches <= 50 && total > 50 ? failures.length > 0 : null,
+      },
+      calls,
+    };
   }
 
   /** One agent turn, no tools: the model must answer through PiHarness. */
@@ -93,7 +144,7 @@ export default {
 
     let result: CheckResult;
     try {
-      result = await env.SPIKE.getByName("spike").run(check as CheckName);
+      result = await env.SPIKE.getByName("spike").run(check as CheckName, Object.fromEntries(url.searchParams));
     } catch (error) {
       result = failure(error, { ranIn: "worker" });
     }
