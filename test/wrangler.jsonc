@@ -7,7 +7,7 @@
   "compatibility_flags": ["nodejs_compat"],
   // Local only; does not enable protection. See docs/spec.md, Cloudflare Access.
   "access": { "dev": { "aud": "signal-dev" } },
-  "vars": { "FINNHUB_API_KEY": "fake", "EDGAR_CONTACT": "fake@example.invalid" },
+  "vars": { "ACCESS_AUD": "signal-dev", "FINNHUB_API_KEY": "fake","EDGAR_CONTACT": "fake@example.invalid" },
   "durable_objects": {
     "bindings": [{ "name": "SIGNAL", "class_name": "Signal" }]
   },

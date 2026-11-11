@@ -142,7 +142,16 @@ export class Signal extends Base {
 
 export default {
   scheduled: app.scheduled,
-  async fetch(req: Request, env: Env) {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    // Everything but /fake is the real router. `x-test-aud` swaps ctx.access.aud, to see a wrong one refused.
+    if (new URL(req.url).pathname !== "/fake") {
+      // The harness proxy rewrites the port, so a test cannot know the origin: `x-test-same-origin` sends the right one.
+      if (req.headers.has("x-test-same-origin")) {
+        req = new Request(req, { headers: new Headers([...req.headers, ["origin", new URL(req.url).origin]]) });
+      }
+      const aud = req.headers.get("x-test-aud");
+      return app.fetch(req, env, aud ? ({ access: { aud } } as unknown as ExecutionContext) : ctx);
+    }
     const { kind, args } = (await req.json()) as any;
     return Response.json(await (env.SIGNAL.getByName("signal") as any).callFake(kind, args));
   },
