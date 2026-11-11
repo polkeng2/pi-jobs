@@ -26,8 +26,9 @@ export function createBudget(rawFetch: typeof fetch) {
       b.used = 0;
     },
     async fetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
+      // A freed slot goes straight to the oldest waiter (live stays), so a new caller cannot jump in.
       if (live >= MAX_CONCURRENT) await new Promise<void>((r) => waiting.push(r));
-      live++;
+      else live++;
       try {
         let u = String(url);
         for (let hop = 0; ; hop++) {
@@ -39,8 +40,9 @@ export function createBudget(rawFetch: typeof fetch) {
           u = new URL(loc, u).href;
         }
       } finally {
-        live--;
-        waiting.shift()?.();
+        const next = waiting.shift();
+        if (next) next();
+        else live--;
       }
     },
     /** Returns the binding's result untouched. */

@@ -36,7 +36,27 @@ test("at most 6 fetches run at once", async () => {
   expect(b.used).toBe(20);
 });
 
-test("fetch gets an 8 s abort signal", async () => {
+test("a caller arriving as a slot frees cannot jump the waiter past 6 in flight", async () => {
+  let live = 0, peak = 0;
+  const gates: (() => void)[] = [];
+  const b = createBudget(() => {
+    peak = Math.max(peak, ++live);
+    return new Promise<Response>((r) => gates.push(() => (live--, r(new Response("x")))));
+  });
+  const calls = Array.from({ length: 7 }, () => b.fetch("https://a/")); // 6 run, 1 waits
+  gates.shift()!();
+  queueMicrotask(() => void calls.push(b.fetch("https://a/"))); // runs right after the slot is freed
+  await new Promise((r) => setTimeout(r, 0));
+  while (gates.length) {
+    gates.shift()!();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  await Promise.all(calls);
+  expect(calls).toHaveLength(8);
+  expect(peak).toBe(6);
+});
+
+test("fetch gets an 8 s abort signal",async () => {
   let signal: AbortSignal | undefined;
   const b = createBudget(async (_u, init) => ((signal = init?.signal ?? undefined), new Response("x")));
   await b.fetch("https://a/");
