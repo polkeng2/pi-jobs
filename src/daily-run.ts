@@ -3,6 +3,7 @@ import { LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome
 
 import { createBudget, isSubrequestLimit } from "./budget.ts";
 import { fetchFeeds } from "./feeds.ts";
+import { CLEF, scoreStories as score } from "./scorer.ts";
 import type { Signal } from "./signal.ts";
 import { prune } from "./storage.ts";
 
@@ -15,9 +16,9 @@ export type Deps = { sql: SqlStorage; budget: Budget; ai: Pick<Ai, "run">; now: 
 const utc = (date: string, hhmm: string) => Date.parse(`${date}T${hhmm}:00Z`);
 const DAY_MS = 86_400_000;
 
-// Stubs. #30 scoreStories (src/scorer.ts),
-// #32 the write phase, #33 publishDigest (src/publish.ts). Keep the spec signatures.
-const scoreStories = async (_d: Deps, _date: string) => ({ done: true });
+// Stubs. #32 the write phase, #33 publishDigest (src/publish.ts). Keep the spec signatures.
+const scoreStories = (d: Deps, date: string) =>
+  score({ ...d, clef: (state, questions) => d.ai.run(CLEF, { model: "clef", state, questions } as any) as any }, date);
 function publishDigest(d: { sql: SqlStorage; now: () => number }, date: string) {
   const late = d.now() >= utc(date, "07:50");
   d.sql.exec(
