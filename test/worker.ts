@@ -3,7 +3,11 @@
 import type { Io } from "../src/daily-run.ts";
 import app from "../src/index.ts";
 import { Signal as Base } from "../src/signal.ts";
-import { ARTICLES, FEEDS, SCHEMA } from "./fixtures.ts";
+import { createAI } from "agents/models/pi-ai";
+import { getArticleText } from "../src/article.ts";
+import { createBudget } from "../src/budget.ts";
+import { readStoryTool } from "../src/read-story.ts";
+import { ARTICLES, FEEDS, READ_STORY_ARTICLES, SCHEMA } from "./fixtures.ts";
 
 const sse = (chunks: object[]) =>
   new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n", {
@@ -44,7 +48,7 @@ function fakeAI(o: Base, log: (kind: string, target: string) => void) {
       }
       const write = text.includes("[badjson]")
         ? "{not json"
-        : JSON.stringify({ headline: "Titular de prueba inventado", summary: "Resumen de prueba inventado para el texto de ejemplo.", why_it_matters: "Importa en la prueba." });
+        : JSON.stringify({ headline: "Acme eleva su previsión de ingresos", summary: "Acme ha elevado su previsión de ingresos para el año, según un comunicado de la empresa.", why_it_matters: "Acme gana margen en la nube.", subject: "Acme" });
       return raw ? sse([chunk({ role: "assistant", content: write }), chunk({}, "stop")]) : { response: write };
     },
   };
@@ -58,9 +62,9 @@ function fakeFetch(o: Base, log: (kind: string, target: string) => void) {
       .exec<{ status: number }>("SELECT status FROM fake_rules WHERE ? LIKE '%' || pattern || '%' LIMIT 1", url)
       .toArray()[0];
     if (rule) return new Response("fake failure", { status: rule.status });
-    const body = FEEDS[url] ?? ARTICLES[url];
+    const body = FEEDS[url] ?? ARTICLES[url] ?? READ_STORY_ARTICLES[url];
     if (body === undefined) throw new Error(`fakeFetch: unknown URL ${url}`);
-    return new Response(body);
+    return new Response(body, { headers: { "content-type": url.endsWith(".json") ? "application/json" : "text/html" } });
   };
 }
 
@@ -98,6 +102,14 @@ export class Signal extends Base {
     const io = this.io();
     try {
       if (kind === "now") return { now: io.now() };
+      if (kind === "article" || kind === "read_story") {
+        const budget = createBudget(io.fetch);
+        budget.used = args.used ?? 0;
+        if (kind === "article") return (await getArticleText(budget.fetch, args)) ?? { basis: null };
+        const ai = createAI({ binding: budget.countAI(io.ai) });
+        const r = await readStoryTool(() => ({ sql: this.ctx.storage.sql, budget, ai: ai as any })).execute({ story_id: args.id }, null as any, null as any);
+        return { result: JSON.parse((r.output as any)[0].text), control: r.control, usage: r.usage, used: budget.used };
+      }
       if (kind === "fetch") return { status: (await io.fetch(args)).status };
       return await io.ai.run(args.model ?? "@cf/cloudflare/clef", args);
     } catch (e) {
