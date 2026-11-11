@@ -106,6 +106,27 @@ test("past 07:50 UTC the phase jumps to publish and the Digest is partial", asyn
   expect(await (await storage()).exec("SELECT * FROM fake_calls WHERE dispatch = 'hook'")).toEqual([]);
 });
 
+test("the 07:50 deadline aborts a live write session, then the partial Digest is published", async () => {
+  await setNow(at("07:00"));
+  await seed([{ id: 1, heading: "[hang] Acme ships a thing" }]);
+  await trigger();
+  const db = await storage();
+  const pending = async (session: string) =>
+    (await (await harness.fetch("/fake", { method: "POST", body: JSON.stringify({ kind: "pending", args: session }) })).json()) as any[];
+  let session = "";
+  for (const end = Date.now() + 20_000; !session && Date.now() < end; await new Promise((r) => setTimeout(r, 200))) {
+    session = ((await db.exec("SELECT session_id FROM digests"))[0] as any)?.session_id ?? "";
+  }
+  expect(session).not.toBe("");
+  await new Promise((r) => setTimeout(r, 500));
+  expect(await pending(session)).toHaveLength(1); // the run is live and unanswered
+  await setNow(at("07:55")); // the next dispatch finds the deadline passed
+  const row = await digest(30_000);
+  expect(row).toMatchObject({ phase: "done", status: "partial" });
+  expect(await pending(session)).toEqual([]); // aborted
+  expect(await db.exec("SELECT status FROM stories")).toEqual([{ status: "shortlist" }]);
+});
+
 test("a failed Feed, an unreadable Article and [badjson] together: partial Digest, Stories settle as the tool contract says", async () => {
   await setNow(at("07:00"));
   await seed([

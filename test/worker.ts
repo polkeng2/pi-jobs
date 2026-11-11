@@ -37,6 +37,10 @@ function fakeAI(o: Base, log: (kind: string, target: string) => void) {
         return { answers, usage: { input_tokens: 100, output_tokens: 0 } };
       }
       const raw = opts?.returnRawResponse;
+      if (input.tools?.length && text.includes("[hang]")) {
+        // an orchestrator call that never answers, so the write session stays live until aborted
+        return new Promise((_, reject) => opts?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+      }
       if (input.tools?.length) {
         // ponytail: ids are matched from the rendered <shortlist> JSON lines
         const list = text.match(/<shortlist>([\s\S]*?)<\/shortlist>/)?.[1].split("\\n") ?? [];
@@ -119,6 +123,7 @@ export class Signal extends Base {
     const io = this.io();
     try {
       if (kind === "now") return { now: io.now() };
+      if (kind === "pending") return (await this.harness.pending({ session: args })).map((p) => ({ id: p.operationId, status: p.status }));
       if (kind === "article" || kind === "read_story") {
         const budget = createBudget(io.fetch);
         budget.used = args.used ?? 0;
