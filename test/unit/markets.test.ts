@@ -124,6 +124,15 @@ test("EDGAR: tickers fetched for a missing CIK, earnings Story has the filing fo
   expect(calls.some((c) => /price-target|recommendation/.test(c.url))).toBe(false);
 });
 
+test("the Feed list is rebuilt only when a row can change it, not after every fetch", async () => {
+  const { d, calls } = setup(happy);
+  let builds = 0;
+  const sql = { exec: (q: string, ...p: any[]) => (q.includes("SELECT ticker, cik, logo_url") && builds++, d.sql.exec(q, ...p)) };
+  await fetchFeeds({ ...d, sql: sql as any }, DATE);
+  expect(calls.length).toBeGreaterThan(15);
+  expect(builds).toBeLessThanOrEqual(5); // first build, after tickers, after 2 EDGAR rows, final check
+});
+
 test("consensus with no row leaves it null and fails nothing", async () => {
   const { sql, d } = setup({ ...happy, [`${FH}/calendar/earnings?symbol=ACME`]: JSON.stringify({ earningsCalendar: [] }) });
   await fetchFeeds(d, DATE);

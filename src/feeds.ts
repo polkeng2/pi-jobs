@@ -142,7 +142,8 @@ export async function fetchFeeds(d: Deps, date: string) {
     sql.exec("INSERT INTO positions (ticker, name) VALUES (?, ?) ON CONFLICT (ticker) DO UPDATE SET name = excluded.name", p.ticker, p.name);
   }
   const tickers = interests.positions.map((p) => p.ticker);
-  // The list is rebuilt each step: a done `tickers` or `edgar:<T>` row adds Feeds (`edgar`, `consensus`).
+  // Rebuilt only when a done `tickers` or `edgar:<T>` row adds Feeds (`edgar`, `consensus`), and once at the end for `done`.
+  // Between rebuilds a finished Feed stays in `todo`, but `tried` skips it.
   const next = () => {
     const feeds = feedList(d, date, tickers);
     for (const f of feeds) sql.exec("INSERT OR IGNORE INTO feed_fetches (digest_date, feed_key) VALUES (?, ?)", date, f.key);
@@ -169,6 +170,7 @@ export async function fetchFeeds(d: Deps, date: string) {
         sql.exec("UPDATE feed_fetches SET status = 'done', story_count = ?, error = NULL WHERE digest_date = ? AND feed_key = ?", added, date, f.key);
         return added;
       });
+      if (f.key === "tickers" || f.key.startsWith("edgar:")) todo = next().feeds;
     } catch (e) {
       if (isSubrequestLimit(e)) throw e;
       sql.exec(
@@ -176,8 +178,8 @@ export async function fetchFeeds(d: Deps, date: string) {
         String((e as Error)?.message ?? e), MAX_ATTEMPTS, date, f.key,
       );
     }
-    todo = next().feeds;
   }
+  todo = next().feeds;
   const failed = sql
     .exec<{ feed_key: string }>("SELECT feed_key FROM feed_fetches WHERE digest_date = ? AND status = 'failed'", date)
     .toArray().map((r) => r.feed_key);
