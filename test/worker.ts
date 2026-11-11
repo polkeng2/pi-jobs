@@ -1,5 +1,7 @@
 // Test Worker: Signal with every outside call faked. All fakes are stateless: they decide from their
 // input and from rows the test seeded, never from memory, so a crash cannot make them re-issue calls.
+import type { Io } from "../src/daily-run.ts";
+import app from "../src/index.ts";
 import { Signal as Base } from "../src/signal.ts";
 import { ARTICLES, FEEDS, SCHEMA } from "./fixtures.ts";
 
@@ -75,6 +77,22 @@ export class Signal extends Base {
     return { ai: fakeAI(this, log) as unknown as Ai, fetch: fakeFetch(this, log) as typeof fetch, now: fakeNow(this), chunkDelayMs: 5, pollDelayMs: 50 };
   }
 
+  /** Rule `crash:<phase>` aborts the object, `throw:<phase>` throws, inside that phase's dispatch. Logged first. */
+  async dailyStep(date: string, io: Io) {
+    const sql = this.ctx.storage.sql;
+    const phase = sql.exec<{ phase: string }>("SELECT phase FROM digests WHERE date = ?", date).one().phase;
+    const rule = sql
+      .exec<{ pattern: string }>("SELECT pattern FROM fake_rules WHERE pattern IN (?, ?)", `crash:${phase}`, `throw:${phase}`)
+      .toArray()[0]?.pattern;
+    if (rule) {
+      sql.exec("INSERT INTO fake_calls VALUES ('hook', ?, ?)", rule.split(":")[0], phase);
+      await this.ctx.storage.sync();
+      if (rule.startsWith("crash")) this.ctx.abort("fake crash");
+      throw new Error("fake dispatch failure");
+    }
+    return super.dailyStep(date, io);
+  }
+
   /** Test-only RPC: runs one fake and returns JSON, so a test can exercise io() from outside. */
   async callFake(kind: string, args: any) {
     const io = this.io();
@@ -89,6 +107,7 @@ export class Signal extends Base {
 }
 
 export default {
+  scheduled: app.scheduled,
   async fetch(req: Request, env: Env) {
     const { kind, args } = (await req.json()) as any;
     return Response.json(await (env.SIGNAL.getByName("signal") as any).callFake(kind, args));
