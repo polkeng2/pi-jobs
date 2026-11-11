@@ -2,14 +2,13 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { getArticleText } from "./article.ts";
-import { neuronGuard, neurons, type createBudget } from "./budget.ts";
+import { logUsage, neuronGuard, READ_STORY_GUARD, type createBudget } from "./budget.ts";
 import { parseInterests } from "./interests.ts";
 import { afterCloseCutoff, writerSystem, writerUser } from "./prompts.ts";
 import { writeUp } from "./writer.ts";
 
 export const GLM = "@cf/zai-org/glm-4.7-flash";
 const SETTLED = ["written", "unreadable", "write_failed"];
-const BUDGET_LIMIT = 34; // + at most 5 calls below = 39
 
 type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 export type ReadStoryDeps = {
@@ -39,7 +38,7 @@ export async function readStory({ sql, budget, ai }: ReadStoryDeps, id: number) 
 
   const date: string = s.digest_date;
   const sum = (d: string) => q("SELECT COALESCE(SUM(neurons), 0) AS n FROM usage_log WHERE digest_date = ?", d)[0].n;
-  const stop = budget.used > BUDGET_LIMIT ? "budget" : neuronGuard(sum, date) === "neurons" ? "neurons" : null;
+  const stop = budget.used > READ_STORY_GUARD ? "budget" : neuronGuard(sum, date) === "neurons" ? "neurons" : null;
   if (stop) {
     q("UPDATE digests SET chunk_stop = ? WHERE date = ?", stop, date);
     return result({ story_id: id, status: "chunk_budget_spent" });
@@ -67,12 +66,7 @@ export async function readStory({ sql, budget, ai }: ReadStoryDeps, id: number) 
     model: ai(GLM), system: writerSystem(input), user, section: s.section, sent: user,
     isEarnings: s.kind === "earnings" && article.basis === "article",
   });
-  q(
-    `INSERT INTO usage_log (digest_date, phase, model, calls, input_tokens, output_tokens, neurons) VALUES (?, 'writer', ?, ?, ?, ?, ?)
-     ON CONFLICT (digest_date, phase, model) DO UPDATE SET calls = calls + excluded.calls, input_tokens = input_tokens + excluded.input_tokens,
-       output_tokens = output_tokens + excluded.output_tokens, neurons = neurons + excluded.neurons`,
-    date, GLM, r.usage.calls, r.usage.input, r.usage.output, neurons(GLM, r.usage.input, r.usage.output),
-  );
+  logUsage(sql, date, "writer", GLM, r.usage);
 
   if ("error" in r) {
     q("UPDATE stories SET status = 'write_failed' WHERE id = ? AND status = 'shortlist'", id);

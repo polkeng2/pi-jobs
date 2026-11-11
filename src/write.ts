@@ -6,7 +6,7 @@ import { createAI } from "agents/models/pi-ai";
 import type { Deps } from "./daily-run.ts";
 import { orchestratorUser, type ShortlistRow, type WrittenRow } from "./prompts.ts";
 import { GLM, readStory } from "./read-story.ts";
-import { neurons } from "./budget.ts";
+import { logUsage } from "./budget.ts";
 
 const MAX_CHUNKS = 6;
 /** What the write phase needs from the host: the harness, and where the next pi run's budget goes. */
@@ -62,7 +62,7 @@ export async function writeStep(d: Deps, date: string, host: WriteHost): Promise
 async function settle(d: Deps, date: string, host: WriteHost, r: Row, result: PiOperationResult) {
   const { sql } = d;
   const session = host.harness.sessions.get(r.session_id!);
-  logUsage(sql, date, await session.messages());  // ponytail: a crash between logUsage and the update below counts this chunk's usage twice; the 9,000 guard has room.
+  logOrchestratorUsage(sql, date, await session.messages());  // ponytail: a crash between logOrchestratorUsage and the update below counts this chunk's usage twice; the 9,000 guard has room.
   const failed = result.status === "unanswered" || r.chunk_reads === 0;
   if (failed && r.write_failed === 0) {
     await session.reset();
@@ -82,17 +82,12 @@ async function settle(d: Deps, date: string, host: WriteHost, r: Row, result: Pi
 }
 
 /** Orchestrator usage from the chunk's assistant messages. An interrupted stream reports zero (S11). */
-function logUsage(sql: SqlStorage, date: string, entries: { model?: readonly any[] }[]) {
+function logOrchestratorUsage(sql: SqlStorage, date: string, entries: { model?: readonly any[] }[]) {
   const msgs = entries.flatMap((e) => e.model ?? []).filter((m) => m.role === "assistant" && m.usage);
   if (!msgs.length) return;
   const input = msgs.reduce((n, m) => n + m.usage.input, 0);
   const output = msgs.reduce((n, m) => n + m.usage.output, 0);
-  sql.exec(
-    `INSERT INTO usage_log (digest_date, phase, model, calls, input_tokens, output_tokens, neurons) VALUES (?, 'orchestrator', ?, ?, ?, ?, ?)
-     ON CONFLICT (digest_date, phase, model) DO UPDATE SET calls = calls + excluded.calls, input_tokens = input_tokens + excluded.input_tokens,
-       output_tokens = output_tokens + excluded.output_tokens, neurons = neurons + excluded.neurons`,
-    date, GLM, msgs.length, input, output, neurons(GLM, input, output),
-  );
+  logUsage(sql, date, "orchestrator", GLM, { calls: msgs.length, input, output });
 }
 
 /**

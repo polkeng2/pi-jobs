@@ -1,8 +1,7 @@
 // score_stories: one Clef call per Story, a Signal Score, then the shortlist trimmed to caps. Plain code, no model.
-import { isSubrequestLimit, neuronGuard, neurons, type createBudget } from "./budget.ts";
+import { CHUNK_CALLS, isSubrequestLimit, logUsage, neuronGuard, type createBudget } from "./budget.ts";
 
 export const CLEF = "@cf/cloudflare/clef";
-const CALLS_PER_CHUNK = 40;
 const CONCURRENCY = 6;
 
 const SUBSTANCE = {
@@ -110,7 +109,7 @@ export async function scoreStories({ sql, clef, budget }: ScoreDeps, date: strin
     `SELECT s.id, s.section, s.feed_heading, s.feed_snippet, s.feed, s.ticker, s.score_attempts, COALESCE(p.strong_move, 0) AS strong
      FROM stories s LEFT JOIN position_quotes p ON p.digest_date = s.digest_date AND p.ticker = s.ticker
      WHERE s.digest_date = ? AND s.status = 'new' AND s.kind = 'news' ORDER BY s.id LIMIT ?`,
-    date, Math.max(0, CALLS_PER_CHUNK - budget.used),
+    date, Math.max(0, CHUNK_CALLS - budget.used),
   );
 
   const one = async (r: any) => {
@@ -121,11 +120,7 @@ export async function scoreStories({ sql, clef, budget }: ScoreDeps, date: strin
     };
     try {
       const { answers, usage } = await clef(state, questions);
-      q(
-        `INSERT INTO usage_log (digest_date, phase, model, calls, input_tokens, neurons) VALUES (?, 'score', ?, 1, ?, ?)
-         ON CONFLICT (digest_date, phase, model) DO UPDATE SET calls = calls + 1, input_tokens = input_tokens + excluded.input_tokens, neurons = neurons + excluded.neurons`,
-        date, CLEF, usage.input_tokens, neurons(CLEF, usage.input_tokens, 0),
-      );
+      logUsage(sql, date, "score", CLEF, { calls: 1, input: usage.input_tokens, output: 0 });
       const { score, passes } = signalScore(SCORER, r.section, answers, !!r.strong);
       q(
         "UPDATE stories SET clef_answers = ?, signal_score = ?, scorer_version = ?, status = ? WHERE id = ?",

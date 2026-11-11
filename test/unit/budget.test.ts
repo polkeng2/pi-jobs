@@ -1,5 +1,7 @@
 import { expect, test } from "vitest";
-import { createBudget, isSubrequestLimit, neuronGuard, neurons } from "../../src/budget.ts";
+import { createBudget, isSubrequestLimit, logUsage, neuronGuard, neurons } from "../../src/budget.ts";
+import { migrate } from "../../src/schema.ts";
+import { makeSql } from "../sql.ts";
 
 const redirect = (to: string) => new Response(null, { status: 302, headers: { location: to } });
 
@@ -79,6 +81,16 @@ test("isSubrequestLimit matches the platform error", () => {
 test("neurons use the pricing-page rates", () => {
   expect(neurons("@cf/cloudflare/clef", 1_000_000, 0)).toBeCloseTo(21_818);
   expect(neurons("@cf/zai-org/glm-4.7-flash", 1_000_000, 1_000_000)).toBeCloseTo(41_900);
+});
+
+test("logUsage upserts one row per date, phase and model, adding calls, tokens and neurons", () => {
+  const { sql, transactionSync } = makeSql();
+  migrate(sql, transactionSync);
+  logUsage(sql, "2026-11-03", "writer", "@cf/zai-org/glm-4.7-flash", { calls: 1, input: 1_000_000, output: 0 });
+  logUsage(sql, "2026-11-03", "writer", "@cf/zai-org/glm-4.7-flash", { calls: 2, input: 0, output: 1_000_000 });
+  expect(sql.exec("SELECT phase, calls, input_tokens, output_tokens, neurons FROM usage_log").toArray()).toEqual([
+    { phase: "writer", calls: 3, input_tokens: 1_000_000, output_tokens: 1_000_000, neurons: 41_900 },
+  ]);
 });
 
 test("neuron guard stops at 9,000 for the date and passes below", () => {

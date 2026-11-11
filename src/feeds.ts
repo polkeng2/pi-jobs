@@ -1,10 +1,9 @@
 // fetch_feeds: one feed_fetches row per Feed, one fetch each, prefilter, then Stories. Plain code, no model.
-import { isSubrequestLimit } from "./budget.ts";
+import { CHUNK_CALLS, isSubrequestLimit } from "./budget.ts";
 import type { Deps } from "./daily-run.ts";
 import { parseInterests } from "./interests.ts";
 import { type Item, normalizeUrl, parseAnthropic, parseEdgar, parseFeed, parseFinnhubNews, parseHn, parseLobsters } from "./parsers.ts";
 
-const CALL_LIMIT = 40;
 const WINDOW_MS = 48 * 3_600_000;
 const FEED_CAP = 20;
 const MAX_ATTEMPTS = 2;
@@ -156,7 +155,7 @@ export async function fetchFeeds(d: Deps, date: string) {
   const tried = new Set<string>(); // one attempt per Feed per call
   let storiesAdded = 0;
   let todo = next().feeds;
-  for (let f = todo.find((f) => !tried.has(f.key)); f && budget.used < CALL_LIMIT; f = todo.find((f) => !tried.has(f.key))) {
+  for (let f = todo.find((f) => !tried.has(f.key)); f && budget.used < CHUNK_CALLS; f = todo.find((f) => !tried.has(f.key))) {
     tried.add(f.key);
     try {
       const res = await budget.fetch(f.url(now()), { headers: f.headers ?? { "user-agent": "signal-feed-reader" } });
