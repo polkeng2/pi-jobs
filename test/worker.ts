@@ -82,7 +82,7 @@ export class Signal extends Base {
     const dispatch = crypto.randomUUID();
     const log = (kind: string, target: string) =>
       this.ctx.storage.sql.exec("INSERT INTO fake_calls VALUES (?, ?, ?)", dispatch, kind, target);
-    return { ai: fakeAI(this, log) as unknown as Ai, fetch: fakeFetch(this, log) as typeof fetch, now: fakeNow(this), chunkDelayMs: 5, pollDelayMs: 50 };
+    return { ai: fakeAI(this, log) as unknown as Ai, fetch: fakeFetch(this, log) as typeof fetch, now: fakeNow(this), secrets: {}, chunkDelayMs: 5, pollDelayMs: 50 };
   }
 
   /** Rule `crash:<phase>` aborts the object, `throw:<phase>` throws, inside that phase's dispatch. Logged first. */

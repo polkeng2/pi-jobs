@@ -2,6 +2,7 @@
 import { LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome } from "agents/lifecycle";
 
 import { createBudget, isSubrequestLimit } from "./budget.ts";
+import { fetchFeeds } from "./feeds.ts";
 import { CLEF, scoreStories as score } from "./scorer.ts";
 import type { Signal } from "./signal.ts";
 import { prune } from "./storage.ts";
@@ -11,13 +12,16 @@ export type Io = ReturnType<Signal["io"]>;
 type Phase = "fetch" | "score" | "write" | "publish" | "done";
 type Budget = ReturnType<typeof createBudget>;
 /** What every chunk gets. `fetch` and `ai` are counted by `budget`. */
-export type Deps = { sql: SqlStorage; budget: Budget; ai: Pick<Ai, "run">; now: () => number };
+export type Deps = {
+  sql: SqlStorage; budget: Budget; ai: Pick<Ai, "run">; now: () => number;
+  secrets: { finnhubKey?: string; edgarContact?: string };
+  transactionSync: <T>(fn: () => T) => T;
+};
 
 const utc = (date: string, hhmm: string) => Date.parse(`${date}T${hhmm}:00Z`);
 const DAY_MS = 86_400_000;
 
-// Stubs. #28 replaces fetchFeeds (src/feeds.ts), #33 publishDigest (src/publish.ts). Keep the spec signatures.
-const fetchFeeds = async (_d: Deps, _date: string) => ({ done: true });
+// Stub. #33 replaces publishDigest (src/publish.ts). Keep the spec signature.
 const scoreStories = (d: Deps, date: string) =>
   score({ ...d, clef: (state, questions) => d.ai.run(CLEF, { model: "clef", state, questions } as any) as any }, date);
 function publishDigest(d: { sql: SqlStorage; now: () => number }, date: string) {
@@ -35,10 +39,12 @@ const setPhase = (sql: SqlStorage, date: string, phase: Phase) =>
   sql.exec("UPDATE digests SET phase = ? WHERE date = ?", phase, date);
 
 /** Runs the chunk for the Digest's current phase and says when to run again. */
-export async function runChunk(sql: SqlStorage, io: Io, date: string, host: WriteHost): Promise<LifecycleJobOutcome> {
+export async function runChunk(
+  sql: SqlStorage, io: Io, date: string, transactionSync: Deps["transactionSync"], host: WriteHost,
+): Promise<LifecycleJobOutcome> {
   const { phase } = sql.exec<{ phase: Phase }>("SELECT phase FROM digests WHERE date = ?", date).one();
   const budget = createBudget(io.fetch); // a fresh budget is the reset at chunk start
-  const d: Deps = { sql, budget, ai: budget.countAI(io.ai), now: io.now };
+  const d: Deps = { sql, budget, ai: budget.countAI(io.ai), now: io.now, secrets: io.secrets, transactionSync };
   const next = { rescheduleAt: io.now() + io.chunkDelayMs };
   try {
     switch (phase) {

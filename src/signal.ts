@@ -62,6 +62,8 @@ export class Signal extends DurableObject<Env> {
       ai: this.env.AI,
       fetch: globalThis.fetch.bind(globalThis),
       now: Date.now,
+      // Secrets (.dev.vars / wrangler secret), not in the generated Env.
+      secrets: { finnhubKey: (this.env as any).FINNHUB_KEY as string | undefined, edgarContact: (this.env as any).EDGAR_CONTACT as string | undefined },
       chunkDelayMs: 1000,
       pollDelayMs: 30_000,
     };
@@ -77,7 +79,7 @@ export class Signal extends DurableObject<Env> {
 
   /** One chunk of the Daily Run. Tests override it to crash or throw inside a dispatch. */
   dailyStep(date: string, io: Io) {
-    return runChunk(this.sql, io, date, this);
+    return runChunk(this.sql, io, date, (fn) => this.ctx.storage.transactionSync(fn), this);
   }
 
   /** read_story's body for the model's tool. Tests override it to crash inside the tool. */
