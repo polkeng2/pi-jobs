@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "signal",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  // Local only; does not enable protection. See docs/spec.md, Cloudflare Access.
+  "access": { "dev": { "aud": "signal-dev" } },
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [{ "name": "SIGNAL", "class_name": "Signal" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Signal"] }],
+  "kv_namespaces": [{ "binding": "KV" }],
+  "triggers": { "crons": ["0 7 * * *"] },
+  "observability": { "enabled": true }
+}
