@@ -24,6 +24,19 @@ Read in the pinned `agents` 0.31.0 and `@earendil-works/pi-durable` 1.4.0 source
 
 Measured (`spike/WAIT.md`): 51, 62 and 106 AI calls inside one run raised no "Too many subrequests", but a run of 340 pings hit it from ping 85 and lost 65 of them. So the limit **does apply** to detached work, at a threshold and reset point Cloudflare does not document. Design rule: count subrequests in code and keep a fallback of one run per chunk of work, each submitted after the previous one settles (a fresh `submit()` on an idle pi starts a fresh invocation). See [cloudflare-free-plan.md](cloudflare-free-plan.md).
 
+## A Lifecycle job and a pi run on one alarm, deployed (2026-11-11, issue #22)
+
+Free plan, Worker `signal-shared-alarm` (since deleted), code in `spike/shared-alarm/`. One Durable Object ran our Lifecycle job (`maxAttempts: 1`, one chunk per dispatch, `rescheduleAt`) and PiHarness together. Took 225 s; no "Too many subrequests" in any step.
+
+| Step | What ran | Result |
+|---|---|---|
+| 1 | Three dispatches, 40 `fetch` each, rescheduled +1 s | 40, 40, 40 calls, no error: each dispatch gets a fresh count |
+| 2 | Real GLM run, `read_story` twice (15 fetches and a 35 s hold each); job polled every 30 s with 0 calls | Run `done`; 30 tool fetches, no error; polls coexisted with the run |
+| 3 | `session.reset()`, a second run like step 2 | `done`; 30 more fetches. 180 calls in total across invocations, past 50 |
+| 4 | FTS5 table, insert, `MATCH '"inversion"*'` on `Inversión en Meta` | Found: **FTS5 and prefix search with diacritics work on a deployed Durable Object** |
+
+Run shape holds: chunks of at most 40 calls, each in its own dispatch, and pi runs submitted after the previous settles. Not measured: a single chunk above 40 calls, and the GLM calls themselves (not counted in the table, only our `fetch` calls were logged).
+
 ## Durability rules that follow
 
 - Only `replay: "safe"` tools re-run after a crash. An interrupted effectful tool is not re-run: the model gets "was interrupted and may have partially run", and in the spike it did not retry. **Make effectful tools idempotent in code** (a ledger in our own tables, keyed upserts) and then mark them safe.

@@ -1,0 +1,15 @@
+{
+  // Throwaway for issue #22: Lifecycle job and PiHarness on one alarm, on the free plan.
+  // Resolves modules from spike/node_modules. Delete with `wrangler delete` afterwards.
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "signal-shared-alarm",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "ai": { "binding": "AI" },
+  "durable_objects": { "bindings": [{ "name": "SHARED", "class_name": "Shared" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shared"] }],
+  "observability": { "enabled": true }
+}
