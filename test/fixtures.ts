@@ -33,3 +33,15 @@ export const READ_STORY_ARTICLES: Record<string, string> = {
   "https://sec.example/f1/x-ex991.htm": page("Zenith Labs reported revenue of $57.0 billion. " + prose(6)),
   "https://sec.example/f2/index.json": JSON.stringify({ directory: { item: [{ name: "x-8k.htm" }] } }),
 };
+
+/** The real Tech Feeds answer with nothing new, so a fake Daily Run's Feeds all succeed. Keyed by URL prefix. */
+export const QUIET_FEEDS: Record<string, string> = {
+  "https://hn.algolia.com/": JSON.stringify({ hits: [] }),
+  "https://lobste.rs/": "[]",
+  "https://www.anthropic.com/sitemap.xml": "<urlset></urlset>",
+  "https://simonwillison.net/": "<feed></feed>",
+  "https://www.techmeme.com/": "<rss><channel></channel></rss>",
+  "https://github.blog/": "<rss><channel></channel></rss>",
+  "https://openai.com/": "<rss><channel></channel></rss>",
+  "https://deepmind.google/": "<rss><channel></channel></rss>",
+};

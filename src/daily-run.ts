@@ -5,6 +5,7 @@ import { createBudget, isSubrequestLimit } from "./budget.ts";
 import { fetchFeeds } from "./feeds.ts";
 import { CLEF, scoreStories as score } from "./scorer.ts";
 import type { Signal } from "./signal.ts";
+import { publishDigest } from "./publish.ts";
 import { prune } from "./storage.ts";
 import { writeStep, type WriteHost } from "./write.ts";
 
@@ -21,19 +22,8 @@ export type Deps = {
 const utc = (date: string, hhmm: string) => Date.parse(`${date}T${hhmm}:00Z`);
 const DAY_MS = 86_400_000;
 
-// Stub. #33 replaces publishDigest (src/publish.ts). Keep the spec signature.
 const scoreStories = (d: Deps, date: string) =>
   score({ ...d, clef: (state, questions) => d.ai.run(CLEF, { model: "clef", state, questions } as any) as any }, date);
-function publishDigest(d: { sql: SqlStorage; now: () => number }, date: string) {
-  // write_failed >= 2: a write chunk failed twice and code read the rest.
-  const late = d.now() >= utc(date, "07:50") ||
-    d.sql.exec<{ f: number }>("SELECT write_failed AS f FROM digests WHERE date = ?", date).one().f >= 2;
-  d.sql.exec(
-    "UPDATE digests SET published_at = ?, status = ?, notice = ?, db_bytes = ? WHERE date = ? AND published_at IS NULL",
-    d.now(), late ? "partial" : "complete", late ? "Se alcanzó la hora límite: este Digest está incompleto." : null,
-    d.sql.databaseSize, date,
-  );
-}
 
 const setPhase = (sql: SqlStorage, date: string, phase: Phase) =>
   sql.exec("UPDATE digests SET phase = ? WHERE date = ?", phase, date);

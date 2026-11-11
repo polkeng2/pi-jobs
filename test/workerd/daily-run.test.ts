@@ -1,4 +1,4 @@
-// The Daily Run driver end to end: cron, phases, write chunks, deadline. Fetch and publish are stubs until #28, #33.
+// The Daily Run driver end to end: cron, phases, write chunks, deadline. Fetch is a stub until #28.
 import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { SCHEMA, shortlistStory } from "../fixtures.ts";
@@ -104,4 +104,24 @@ test("past 07:50 UTC the phase jumps to publish and the Digest is partial", asyn
   expect(row).toMatchObject({ phase: "done", status: "partial" });
   expect(row.notice).toBeTruthy();
   expect(await (await storage()).exec("SELECT * FROM fake_calls WHERE dispatch = 'hook'")).toEqual([]);
+});
+
+test("a failed Feed, an unreadable Article and [badjson] together: partial Digest, Stories settle as the tool contract says", async () => {
+  await setNow(at("07:00"));
+  await seed([
+    { id: 1, heading: "Acme ships a thing" },
+    { id: 2, heading: "Acme paywalled" },
+    { id: 3, heading: "[badjson] Acme" },
+  ]);
+  const db = await storage();
+  await db.exec("UPDATE stories SET article_url = 'https://example.com/paywall' WHERE id = 2");
+  await db.exec("INSERT INTO feed_fetches (digest_date, feed_key, status, attempts, error) VALUES (?, 'hn', 'failed', 2, 'http 500')", DATE);
+  await trigger();
+  const row = await digest(30_000);
+  expect(row).toMatchObject({ status: "partial", phase: "done" });
+  expect(row.notice).toMatch(/fuente/);
+  expect(row.notice).toMatch(/redactar/);
+  expect(await db.exec("SELECT id, status, published_at IS NOT NULL AS pub FROM stories ORDER BY id")).toEqual([
+    { id: 1, status: "written", pub: 1 }, { id: 2, status: "unreadable", pub: 0 }, { id: 3, status: "write_failed", pub: 0 },
+  ]);
 });

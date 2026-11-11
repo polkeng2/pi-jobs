@@ -7,7 +7,7 @@ import { createAI } from "agents/models/pi-ai";
 import { getArticleText } from "../src/article.ts";
 import { createBudget } from "../src/budget.ts";
 import { readStoryTool } from "../src/read-story.ts";
-import { ARTICLES, FEEDS, READ_STORY_ARTICLES, SCHEMA } from "./fixtures.ts";
+import { ARTICLES, FEEDS, QUIET_FEEDS, READ_STORY_ARTICLES, SCHEMA } from "./fixtures.ts";
 
 // Workers AI's stream: OpenAI-style deltas, then a native `{ response: "", usage }` tail with the usage, then [DONE]
 // (the shape agents' normalizeChatCompletionsStream documents from live captures).
@@ -66,7 +66,8 @@ function fakeFetch(o: Base, log: (kind: string, target: string) => void) {
       .exec<{ status: number }>("SELECT status FROM fake_rules WHERE ? LIKE '%' || pattern || '%' LIMIT 1", url)
       .toArray()[0];
     if (rule) return new Response("fake failure", { status: rule.status });
-    const body = FEEDS[url] ?? ARTICLES[url] ?? READ_STORY_ARTICLES[url];
+    const quiet = Object.entries(QUIET_FEEDS).find(([p]) => url.startsWith(p))?.[1];
+    const body = FEEDS[url] ?? ARTICLES[url] ?? READ_STORY_ARTICLES[url] ?? quiet;
     if (body === undefined) throw new Error(`fakeFetch: unknown URL ${url}`);
     return new Response(body, { headers: { "content-type": url.endsWith(".json") ? "application/json" : "text/html" } });
   };
