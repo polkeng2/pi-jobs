@@ -2,7 +2,12 @@
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { Compile } from "typebox/compile";
+import { Settings } from "typebox/system";
 import { isSubrequestLimit } from "./budget.ts";
+
+// workerd allows eval at startup only. The Compile below would make typebox cache "can evaluate", and every
+// later compile, pi's tool-argument validation included, would throw "Code generation from strings disallowed".
+Settings.Set({ useAcceleration: false });
 
 export const WriteUp = Type.Object({
   headline: Type.String({ minLength: 8, maxLength: 120 }),

@@ -5,6 +5,13 @@ CREATE TABLE IF NOT EXISTS fake_now (ms INTEGER);
 CREATE TABLE IF NOT EXISTS fake_calls (dispatch TEXT, kind TEXT, target TEXT);
 `;
 
+/** Inserts shortlisted Stories for a Daily Run; the test seeds them through the object's storage. */
+export const shortlistStory = (date: string, s: { id: number; heading: string; section?: string; ticker?: string; kind?: string; url?: string; score?: number }) => [
+  `INSERT INTO stories (id, digest_date, section, feed, ticker, kind, url, article_url, feed_heading, status, signal_score)
+   VALUES (?, ?, ?, 'hn', ?, ?, 'u', ?, ?, 'shortlist', ?)`,
+  s.id, date, s.section ?? "tech", s.ticker ?? null, s.kind ?? "news", s.url ?? "https://example.com/long", s.heading, s.score ?? 80,
+] as const;
+
 export const FEEDS: Record<string, string> = {
   "https://example.com/feed.xml": `<rss><channel><item><title>Acme raises guidance</title><link>https://example.com/a</link></item></channel></rss>`,
 };

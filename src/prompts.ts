@@ -79,6 +79,27 @@ export function writerUser(i: WriterInput) {
   return `<facts>\n${facts.join("\n")}\n</facts>\n<feed_heading>${safe(i.heading)}</feed_heading>\n${body}`;
 }
 
+export type ShortlistRow = {
+  id: number; section: string; ticker: string | null; kind: string; score: number; heading: string;
+  name: string | null; change_pct: number | null; strong_move: number | null;
+};
+export type WrittenRow = { section: string; ticker: string | null; headline: string };
+
+/** The orchestrator's user message for one chunk, from the shortlist in rendered order and this Daily Run's written Stories. */
+export function orchestratorUser(list: ShortlistRow[], written: WrittenRow[]) {
+  const positions = new Map<string, object>();
+  for (const s of list) if (s.ticker && !positions.has(s.ticker))
+    positions.set(s.ticker, { ticker: s.ticker, name: s.name ?? s.ticker, change_pct: s.change_pct, strong_move: s.strong_move === 1 });
+  const markets: Record<string, number> = {};
+  for (const w of written) if (w.ticker) markets[w.ticker] = (markets[w.ticker] ?? 0) + 1;
+  const w = { tech: written.filter((x) => x.section === "tech").length, markets, headlines: written.map((x) => x.headline) };
+  const heading = (h: string) => h.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 140).replaceAll("<", "‹");
+  const lines = list.map((s) => JSON.stringify({
+    id: s.id, section: s.section, ...(s.ticker && { ticker: s.ticker }), kind: s.kind, score: Math.round(s.score), heading: heading(s.heading),
+  }));
+  return `<positions>\n${[...positions.values()].map((p) => JSON.stringify(p)).join("\n")}\n</positions>\n<written>\n${JSON.stringify(w)}\n</written>\n<shortlist>\n${lines.join("\n")}\n</shortlist>`;
+}
+
 /**
  * Epoch ms of 16:00 New York on the last weekday before `date` (YYYY-MM-DD). An earnings filing accepted after it
  * is after the close, so the price change on the page is not its reaction. Market holidays are ignored.

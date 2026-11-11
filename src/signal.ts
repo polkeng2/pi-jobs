@@ -1,15 +1,55 @@
 import { DurableObject } from "cloudflare:workers";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
+import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
+import { createAI } from "agents/models/pi-ai";
 
-import { DailyRun, runChunk, type Io } from "./daily-run.ts";
+import { createBudget } from "./budget.ts";
+import { DailyRun, runChunk, type Deps, type Io } from "./daily-run.ts";
+import { ORCHESTRATOR_SYSTEM } from "./prompts.ts";
+import { GLM, readStory, readStoryTool } from "./read-story.ts";
 import { migrate } from "./schema.ts";
 import { search, vote } from "./storage.ts";
 import * as view from "./view.ts";
 
 export class Signal extends DurableObject<Env> {
   sql = this.ctx.storage.sql;
+
+  /** The budget and counted binding of the write chunk's pi run. Set when a chunk is submitted, never by a poll. */
+  private run?: Pick<Deps, "budget" | "ai">;
+  /** After a restart pi resumes with no dispatch: a fresh budget, since a restart is a new invocation. */
+  private chunkRun() {
+    if (!this.run) {
+      const io = this.io();
+      const budget = createBudget(io.fetch);
+      this.run = { budget, ai: budget.countAI(io.ai) };
+    }
+    return this.run;
+  }
+  setRunBudget(d: Pick<Deps, "budget" | "ai">) {
+    this.run = { budget: d.budget, ai: d.ai };
+  }
+  /** pi's model calls and read_story's writer both go through the current chunk's counted binding. */
+  ai = createAI({ binding: { run: (...a: Parameters<Ai["run"]>) => this.chunkRun().ai.run(...a) } as Ai });
+
+  harness = new PiHarness({
+    harness: ({ storage, context, onWake }) => {
+      const tool = readStoryTool(() => ({ sql: this.sql, budget: this.chunkRun().budget, ai: this.ai }));
+      const registry = createRegistry();
+      registry.install(defineExtension({
+        name: "signal",
+        tools: [{ ...tool, execute: (args: { story_id: number }) => this.readStory(args.story_id) }],
+        sections: [{ key: "orchestrator", tag: false, render: () => ORCHESTRATOR_SYSTEM }],
+      }));
+      const models = createModels();
+      models.setProvider(this.ai.provider);
+      return Harness.open(storage, { models, registry, onWake }, context);
+    },
+    defaults: { model: this.ai(GLM) },
+  });
   dailyRun = new DailyRun(this);
-  lifecycle = Lifecycle.install(this).use(this.dailyRun);
+  lifecycle = Lifecycle.install(this).use(this.harness).use(this.dailyRun);
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -37,7 +77,12 @@ export class Signal extends DurableObject<Env> {
 
   /** One chunk of the Daily Run. Tests override it to crash or throw inside a dispatch. */
   dailyStep(date: string, io: Io) {
-    return runChunk(this.sql, io, date);
+    return runChunk(this.sql, io, date, this);
+  }
+
+  /** read_story's body for the model's tool. Tests override it to crash inside the tool. */
+  readStory(id: number) {
+    return readStory({ sql: this.sql, budget: this.chunkRun().budget, ai: this.ai }, id);
   }
 
   // --- Page RPCs: plain SQL, no pi, no fetch, no AI (docs/spec.md, Page) ---

@@ -9,10 +9,14 @@ import { createBudget } from "../src/budget.ts";
 import { readStoryTool } from "../src/read-story.ts";
 import { ARTICLES, FEEDS, READ_STORY_ARTICLES, SCHEMA } from "./fixtures.ts";
 
+// Workers AI's stream: OpenAI-style deltas, then a native `{ response: "", usage }` tail with the usage, then [DONE]
+// (the shape agents' normalizeChatCompletionsStream documents from live captures).
 const sse = (chunks: object[]) =>
-  new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n", {
-    headers: { "content-type": "text/event-stream" },
-  });
+  new Response(
+    [...chunks, { response: "", usage: { prompt_tokens: 500, completion_tokens: 50, total_tokens: 550 } }]
+      .map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n",
+    { headers: { "content-type": "text/event-stream" } },
+  );
 const chunk = (delta: object, finish: string | null = null) => ({
   id: "fake", object: "chat.completion.chunk", model: "fake", choices: [{ index: 0, delta, finish_reason: finish }],
 });
@@ -20,7 +24,7 @@ const chunk = (delta: object, finish: string | null = null) => ({
 function fakeAI(o: Base, log: (kind: string, target: string) => void) {
   return {
     async run(model: string, input: any, opts?: any) {
-      log("ai", model);
+      log("ai", input.tools?.length ? `${model} +tools` : model); // "+tools": an orchestrator call
       const text = JSON.stringify(input);
       if (model.includes("clef")) {
         if (text.includes("[fail]")) throw new Error("fake clef failure");
@@ -42,7 +46,7 @@ function fakeAI(o: Base, log: (kind: string, target: string) => void) {
           return raw ? sse(r) : { response: "Nothing to read." };
         }
         const calls = ids.map((id, index) => ({
-          index, id: `call_${id}`, type: "function", function: { name: "read_story", arguments: JSON.stringify({ id }) },
+          index, id: `call_${id}`, type: "function", function: { name: "read_story", arguments: JSON.stringify({ story_id: id }) },
         }));
         return sse([chunk({ role: "assistant", tool_calls: calls }), chunk({}, "tool_calls")]);
       }
@@ -95,6 +99,18 @@ export class Signal extends Base {
       throw new Error("fake dispatch failure");
     }
     return super.dailyStep(date, io);
+  }
+
+  /** Rule `crash:read_story` aborts the object once, after the write-up is stored. The rule is deleted first. */
+  async readStory(id: number) {
+    const r = await super.readStory(id);
+    const sql = this.ctx.storage.sql;
+    if (sql.exec("DELETE FROM fake_rules WHERE pattern = 'crash:read_story' RETURNING pattern").toArray().length) {
+      sql.exec("INSERT INTO fake_calls VALUES ('hook', 'crash', 'read_story')");
+      await this.ctx.storage.sync();
+      this.ctx.abort("fake crash");
+    }
+    return r;
   }
 
   /** Test-only RPC: runs one fake and returns JSON, so a test can exercise io() from outside. */

@@ -1,7 +1,7 @@
-// The Daily Run driver end to end: cron, phases, deadline. Chunks are stubs until #28-#33.
+// The Daily Run driver end to end: cron, phases, write chunks, deadline. Fetch and publish are stubs until #28, #33.
 import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
-import { SCHEMA } from "../fixtures.ts";
+import { SCHEMA, shortlistStory } from "../fixtures.ts";
 
 const harness = createTestHarness({
   workers: [{ configPath: new URL("../wrangler.jsonc", import.meta.url) }],
@@ -34,7 +34,7 @@ async function digest(timeoutMs = 20_000) {
     const [row] = await db.exec("SELECT * FROM digests WHERE date = ? AND published_at IS NOT NULL", DATE);
     if (row) return row as any;
   }
-  throw new Error("no Digest");
+  throw new Error(`no Digest: ${JSON.stringify(await db.exec("SELECT phase, write_chunk, write_failed, chunk_reads, chunk_stop FROM digests"))}`);
 }
 
 test("cron to Digest: every phase runs, at most 40 calls per dispatch", async () => {
@@ -60,6 +60,40 @@ test("a second trigger for the same date is a no-op", async () => {
   expect(await db.exec("SELECT published_at, started_at FROM digests")).toEqual([
     { published_at: first.published_at, started_at: first.started_at },
   ]);
+});
+
+/** Wakes the object (its constructor migrates), then shortlists Stories for DATE. */
+async function seed(stories: Parameters<typeof shortlistStory>[1][]) {
+  await harness.fetch("/fake", { method: "POST", body: JSON.stringify({ kind: "now" }) });
+  const db = await storage();
+  for (const s of stories) await db.exec(...shortlistStory(DATE, s));
+}
+const aiCalls = async () =>
+  (await (await storage()).exec("SELECT target FROM fake_calls WHERE kind = 'ai'")).map((r: any) => r.target as string);
+
+test("the orchestrator picks from the shortlist and read_story writes each Story", async () => {
+  await setNow(at("07:00"));
+  await seed([{ id: 1, heading: "Acme ships a thing" }, { id: 2, heading: "Acme raises guidance" }]);
+  await trigger();
+  expect(await digest(30_000)).toMatchObject({ status: "complete", write_chunk: 1, write_failed: 0 });
+  const db = await storage();
+  expect(await db.exec("SELECT status FROM stories ORDER BY id")).toEqual([{ status: "written" }, { status: "written" }]);
+  expect((await aiCalls()).filter((t) => t.endsWith("+tools"))).toHaveLength(1);
+  expect((await db.exec("SELECT calls, input_tokens FROM usage_log WHERE phase = 'orchestrator'"))[0]).toEqual({ calls: 1, input_tokens: 500 });
+});
+
+test("[nopick] in chunk 1: the retry reads nothing too, code reads the list, earnings included, Digest partial", async () => {
+  await setNow(at("07:00"));
+  await seed([
+    { id: 1, heading: "[nopick] Acme ships a thing" },
+    { id: 2, heading: "8-K Item 2.02: Results", section: "markets", ticker: "ACME", kind: "earnings", url: "https://sec.example/f1/", score: 100 },
+  ]);
+  await trigger();
+  expect(await digest(30_000)).toMatchObject({ status: "partial", write_chunk: 1, write_failed: 2 });
+  expect(await (await storage()).exec("SELECT id, status FROM stories ORDER BY id")).toEqual([
+    { id: 1, status: "written" }, { id: 2, status: "written" },
+  ]);
+  expect((await aiCalls()).filter((t) => t.endsWith("+tools"))).toHaveLength(2); // the chunk and its retry
 });
 
 test("past 07:50 UTC the phase jumps to publish and the Digest is partial", async () => {

@@ -5,6 +5,7 @@ import { createBudget, isSubrequestLimit } from "./budget.ts";
 import { CLEF, scoreStories as score } from "./scorer.ts";
 import type { Signal } from "./signal.ts";
 import { prune } from "./storage.ts";
+import { writeStep, type WriteHost } from "./write.ts";
 
 export type Io = ReturnType<Signal["io"]>;
 type Phase = "fetch" | "score" | "write" | "publish" | "done";
@@ -15,13 +16,14 @@ export type Deps = { sql: SqlStorage; budget: Budget; ai: Pick<Ai, "run">; now: 
 const utc = (date: string, hhmm: string) => Date.parse(`${date}T${hhmm}:00Z`);
 const DAY_MS = 86_400_000;
 
-// Stubs. #28 replaces fetchFeeds (src/feeds.ts), #30 scoreStories (src/scorer.ts),
-// #32 the write phase, #33 publishDigest (src/publish.ts). Keep the spec signatures.
+// Stubs. #28 replaces fetchFeeds (src/feeds.ts), #33 publishDigest (src/publish.ts). Keep the spec signatures.
 const fetchFeeds = async (_d: Deps, _date: string) => ({ done: true });
 const scoreStories = (d: Deps, date: string) =>
   score({ ...d, clef: (state, questions) => d.ai.run(CLEF, { model: "clef", state, questions } as any) as any }, date);
 function publishDigest(d: { sql: SqlStorage; now: () => number }, date: string) {
-  const late = d.now() >= utc(date, "07:50");
+  // write_failed >= 2: a write chunk failed twice and code read the rest.
+  const late = d.now() >= utc(date, "07:50") ||
+    d.sql.exec<{ f: number }>("SELECT write_failed AS f FROM digests WHERE date = ?", date).one().f >= 2;
   d.sql.exec(
     "UPDATE digests SET published_at = ?, status = ?, notice = ?, db_bytes = ? WHERE date = ? AND published_at IS NULL",
     d.now(), late ? "partial" : "complete", late ? "Se alcanzó la hora límite: este Digest está incompleto." : null,
@@ -33,7 +35,7 @@ const setPhase = (sql: SqlStorage, date: string, phase: Phase) =>
   sql.exec("UPDATE digests SET phase = ? WHERE date = ?", phase, date);
 
 /** Runs the chunk for the Digest's current phase and says when to run again. */
-export async function runChunk(sql: SqlStorage, io: Io, date: string): Promise<LifecycleJobOutcome> {
+export async function runChunk(sql: SqlStorage, io: Io, date: string, host: WriteHost): Promise<LifecycleJobOutcome> {
   const { phase } = sql.exec<{ phase: Phase }>("SELECT phase FROM digests WHERE date = ?", date).one();
   const budget = createBudget(io.fetch); // a fresh budget is the reset at chunk start
   const d: Deps = { sql, budget, ai: budget.countAI(io.ai), now: io.now };
@@ -46,9 +48,11 @@ export async function runChunk(sql: SqlStorage, io: Io, date: string): Promise<L
       case "score":
         if ((await scoreStories(d, date)).done) setPhase(sql, date, "write");
         return next;
-      case "write": // #32: sessions, submit, poll at io.pollDelayMs, retries, code reads
-        setPhase(sql, date, "publish");
-        return next;
+      case "write": {
+        const step = await writeStep(d, date, host);
+        if (step === "publish") setPhase(sql, date, "publish");
+        return step === "poll" ? { rescheduleAt: io.now() + io.pollDelayMs } : next;
+      }
       case "publish": {
         publishDigest(d, date);
         const cutMs = Date.parse(date) - 90 * DAY_MS;
@@ -93,11 +97,12 @@ export class DailyRun extends LifecycleCapability {
     const io = (this.io = this.host.io()); // once per dispatch
     const date = ctx.job.id.slice("digest-".length);
     const sql = this.host.sql;
-    const { phase, chunk_stop } = sql.exec<{ phase: Phase; chunk_stop: string | null }>(
-      "SELECT phase, chunk_stop FROM digests WHERE date = ?", date,
+    const { phase, chunk_stop, session_id } = sql.exec<{ phase: Phase; chunk_stop: string | null; session_id: string | null }>(
+      "SELECT phase, chunk_stop, session_id FROM digests WHERE date = ?", date,
     ).one();
-    // Deadline and neuron guard: go to publish. #32 aborts a live session first.
+    // Deadline and neuron guard: abort a live write run, then go to publish.
     if ((phase !== "publish" && phase !== "done") && (io.now() >= utc(date, "07:50") || chunk_stop === "neurons")) {
+      if (session_id) await this.host.harness.sessions.get(session_id).abort();
       setPhase(sql, date, "publish");
     }
     return this.host.dailyStep(date, io);
