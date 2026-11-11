@@ -1,0 +1,75 @@
+{
+  "version": "q1.w1",
+  "snippetChars": 600,
+  "tech": {
+    "questions": {
+      "relevance": {
+        "type": "score",
+        "instructions": "state.interests lists the owner's topics with a weight, and anti-topics. How directly is state.story about those topics?",
+        "criteria": [
+          "Unrelated to every topic",
+          "Touches a topic in passing",
+          "Adjacent to a topic",
+          "Directly about a medium topic",
+          "Directly about a high topic"
+        ]
+      },
+      "substance": {
+        "type": "score",
+        "instructions": "Does state.story report something concrete that happened (a release, data, a result, a decision, a change), or is it opinion, speculation or promotion?",
+        "criteria": [
+          "Promotion, clickbait or empty hype",
+          "Opinion or speculation, no new fact",
+          "Commentary on a known fact",
+          "Reports a concrete fact, few details",
+          "Reports a concrete new fact with specifics"
+        ]
+      },
+      "is_news": {
+        "type": "noul",
+        "instructions": "Does state.story report a recent event, release or finding, rather than being a tutorial, a how-to guide or a listicle?"
+      }
+    },
+    "weights": {
+      "relevance": 0.6,
+      "substance": 0.4
+    },
+    "threshold": 55,
+    "gate": 0.4,
+    "cap": 30
+  },
+  "markets": {
+    "questions": {
+      "materiality": {
+        "type": "score",
+        "instructions": "state.story.ticker is the company. How much could state.story change an investment thesis on that company?",
+        "criteria": [
+          "Barely about this company",
+          "Share-price commentary or stock picks",
+          "Minor company news",
+          "Significant: big product, contract, lawsuit",
+          "Core: results, guidance, M&A, regulation, leadership"
+        ]
+      },
+      "substance": {
+        "type": "score",
+        "instructions": "Does state.story report something concrete that happened (a release, data, a result, a decision, a change), or is it opinion, speculation or promotion?",
+        "criteria": [
+          "Promotion, clickbait or empty hype",
+          "Opinion or speculation, no new fact",
+          "Commentary on a known fact",
+          "Reports a concrete fact, few details",
+          "Reports a concrete new fact with specifics"
+        ]
+      }
+    },
+    "weights": {
+      "materiality": 0.7,
+      "substance": 0.3
+    },
+    "threshold": 55,
+    "strongThreshold": 35,
+    "cap": 4,
+    "strongCap": 6
+  }
+}
