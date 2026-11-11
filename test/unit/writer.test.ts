@@ -44,6 +44,20 @@ test("numbers must be in the text, ignoring separators, outer zeros and small wh
   expect(checkWriteUp(good, "<article>buy for $900.0 million; closing in March; ha de ser</article>", "tech")).toBeNull();
 });
 
+test("numbers keep their magnitude and compare across separator conventions", () => {
+  const w = (n: string) => with_({ summary: good.summary.replace("900 M$", `${n} M$`), headline: good.headline.replace("900 M$", `${n} M$`) });
+  const src = (n: string) => `<article>buy for $${n} million</article>`;
+  const bad = (n: string) => `these numbers are not in the text: ${n}, ${n}`;
+  expect(checkWriteUp(w("100"), src("10"), "tech")).toBe(bad("100"));
+  expect(checkWriteUp(w("1000"), src("100"), "tech")).toBe(bad("1000"));
+  expect(checkWriteUp(w("1.200"), src("1,200"), "tech")).toBeNull();
+  expect(checkWriteUp(w("1,200"), src("1.200"), "tech")).toBeNull();
+  expect(checkWriteUp(w("1.234,5"), src("1,234.5"), "tech")).toBeNull();
+  expect(checkWriteUp(w("1.200"), src("1,2"), "tech")).toBe(bad("1.200"));
+  expect(checkWriteUp(w("1,5"), src("1.5"), "tech")).toBeNull();
+  expect(checkWriteUp(w("900"), src("900.00"), "tech")).toBeNull();
+});
+
 const msg = (text: string, stopReason = "stop") =>
   ({ role: "assistant", stopReason, content: [{ type: "text", text }], usage: { input: 10, output: 5 } }) as any;
 

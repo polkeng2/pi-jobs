@@ -35,7 +35,17 @@ const STOP_ES = /\b(el|la|los|las|de|del|que|y|en|un|una|con|por|para|ha|se)\b/g
 const STOP_EN = /\b(the|of|and|to|in|that|with|has|for|is|was|its)\b/gi;
 const ADVICE = /\b(recomiend\w* (la |el )?(compra|venta|comprar|vender|mantener)|recomendamos|deberías|conviene (comprar|vender|mantener)|(comprar|vender|mantener) (las )?acciones|(compra|vende) acciones( de \S+)? (ahora|ya)|oportunidad de (compra|inversión)|señal de (compra|venta)|fuerte compra|precio objetivo|objetivo de \d|sobreponderar|infraponderar|sobrevalorad\w+|infravalorad\w+|strong buy|price target)\b/i;
 const nums = (s: string) => s.match(/\d[\d.,]*\d|\d/g) ?? [];
-const norm = (n: string) => n.replace(/[.,]/g, "").replace(/^0+/, "").replace(/0+$/, "");
+/** Canonical form: separators resolved, outer zeros of the integer and fraction dropped, magnitude kept. */
+const norm = (n: string) => {
+  const i = Math.max(n.lastIndexOf("."), n.lastIndexOf(","));
+  const seps = n.match(/[.,]/g)?.length ?? 0;
+  // The last separator is a decimal point when both kinds appear, or when it is alone and not followed by 3 digits.
+  // ponytail: a lone "1.234" reads as one thousand two hundred thirty-four; an English 1.234 passes as 1,234.
+  const dec = i >= 0 && (/\./.test(n) && /,/.test(n) || (seps === 1 && n.length - i - 1 !== 3));
+  const int = (dec ? n.slice(0, i) : n).replace(/[.,]/g, "").replace(/^0+(?=\d)/, "");
+  const frac = dec ? n.slice(i + 1).replace(/0+$/, "") : "";
+  return frac ? `${int}.${frac}` : int;
+};
 
 /** `sent` is the user message exactly as sent. Returns the reason to reject, or null. */
 export function checkWriteUp(w: WriteUp, sent: string, section: string): string | null {
