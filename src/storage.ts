@@ -1,5 +1,5 @@
 // Search, vote and pruning SQL. Takes ctx.storage.sql (or the test look-alike); no state of its own.
-type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
+export type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 
 /** FTS5 query from user text: whitespace tokens, quotes dropped, each `"tok"*`, max 8. Null when empty. Never raw text. */
 export function searchQuery(text: string): string | null {

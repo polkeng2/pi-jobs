@@ -1,5 +1,6 @@
 // score_stories: one Clef call per Story, a Signal Score, then the shortlist trimmed to caps. Plain code, no model.
 import { CHUNK_CALLS, isSubrequestLimit, logUsage, neuronGuard, type createBudget } from "./budget.ts";
+import type { Sql } from "./storage.ts";
 
 export const CLEF = "@cf/cloudflare/clef";
 const CONCURRENCY = 6;
@@ -89,12 +90,10 @@ export function signalScore(scorer: Scorer, section: "tech" | "markets", answers
   return { score, passes: score >= (strongMove ? m.strongThreshold : m.threshold) };
 }
 
-type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 export type ScoreDeps = { sql: Sql; clef: ClefClient; budget: ReturnType<typeof createBudget>; now: () => number };
 
 export async function scoreStories({ sql, clef, budget }: ScoreDeps, date: string) {
   const q = (s: string, ...p: any[]) => sql.exec(s, ...p).toArray();
-  const sum = (d: string) => q("SELECT COALESCE(SUM(neurons), 0) AS n FROM usage_log WHERE digest_date = ?", d)[0].n;
   let scored = 0, failed = 0;
 
   // Earnings make no call: the design always shows them.
@@ -136,7 +135,7 @@ export async function scoreStories({ sql, clef, budget }: ScoreDeps, date: strin
 
   let stopped = false;
   for (let i = 0; i < rows.length && !stopped; i += CONCURRENCY) {
-    if (neuronGuard(sum, date) === "neurons") {
+    if (neuronGuard(sql, date) === "neurons") {
       q("UPDATE digests SET chunk_stop = 'neurons' WHERE date = ?", date);
       stopped = true;
     } else await Promise.all(rows.slice(i, i + CONCURRENCY).map(one));

@@ -24,8 +24,8 @@ export function publishDigest(d: Deps, date: string): { status: "complete" | "pa
         sql.exec("UPDATE stories SET published_at = ?, display_order = ? WHERE id = ? AND published_at IS NULL", at, i + 1, id));
 
     const failedFeeds = n(sql, "SELECT COUNT(*) AS n FROM feed_fetches WHERE digest_date = ? AND status = 'failed'", date);
-    const scoreFailed = n(sql, "SELECT COUNT(*) AS n FROM stories WHERE digest_date = ? AND status = 'score_failed'", date);
-    const writeFailed = n(sql, "SELECT COUNT(*) AS n FROM stories WHERE digest_date = ? AND status = 'write_failed'", date);
+    const { scoreFailed, writeFailed } = sql.exec<{ scoreFailed: number; writeFailed: number }>(
+      "SELECT COALESCE(SUM(status = 'score_failed'), 0) AS scoreFailed, COALESCE(SUM(status = 'write_failed'), 0) AS writeFailed FROM stories WHERE digest_date = ?", date).one();
     const { wf, stop } = sql.exec<{ wf: number; stop: string | null }>(
       "SELECT write_failed AS wf, chunk_stop AS stop FROM digests WHERE date = ?", date).one();
     const late = at >= Date.parse(`${date}T07:50:00Z`);

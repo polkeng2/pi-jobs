@@ -66,7 +66,6 @@ export async function runChunk(
 }
 
 export class DailyRun extends LifecycleCapability {
-  private io?: Io;
   private readonly host: Signal;
 
   constructor(host: Signal) {
@@ -90,7 +89,7 @@ export class DailyRun extends LifecycleCapability {
   }
 
   async onJob(ctx: LifecycleJobContext): Promise<LifecycleJobOutcome> {
-    const io = (this.io = this.host.io()); // once per dispatch
+    const io = this.host.io(); // once per dispatch
     const date = ctx.job.id.slice("digest-".length);
     const sql = this.host.sql;
     const { phase, chunk_stop, session_id } = sql.exec<{ phase: Phase; chunk_stop: string | null; session_id: string | null }>(
@@ -107,7 +106,7 @@ export class DailyRun extends LifecycleCapability {
   /** Without it, one throw with maxAttempts 1 ends the job and no Digest appears (measured). */
   onJobError(ctx: LifecycleJobContext, error: unknown): LifecycleJobOutcome {
     console.error("daily run dispatch failed", ctx.job.id, error);
-    const now = (this.io ?? this.host.io()).now();
+    const now = this.host.io().now();
     if (now >= utc(ctx.job.id.slice("digest-".length), "08:30")) return undefined;
     return { rescheduleAt: now + 60_000 };
   }

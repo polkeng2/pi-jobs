@@ -6,7 +6,7 @@ import { Signal as Base } from "../src/signal.ts";
 import { createAI } from "agents/models/pi-ai";
 import { getArticleText } from "../src/article.ts";
 import { createBudget } from "../src/budget.ts";
-import { readStoryTool } from "../src/read-story.ts";
+import { readStory, readStoryTool } from "../src/read-story.ts";
 import { ARTICLES, FEEDS, QUIET_FEEDS, READ_STORY_ARTICLES, SCHEMA } from "./fixtures.ts";
 
 // Workers AI's stream: OpenAI-style deltas, then a native `{ response: "", usage }` tail with the usage, then [DONE]
@@ -129,7 +129,7 @@ export class Signal extends Base {
         budget.used = args.used ?? 0;
         if (kind === "article") return (await getArticleText(budget.fetch, args)) ?? { basis: null };
         const ai = createAI({ binding: budget.countAI(io.ai) });
-        const r = await readStoryTool(() => ({ sql: this.ctx.storage.sql, budget, ai: ai as any })).execute({ story_id: args.id }, null as any, null as any);
+        const r = await readStoryTool((id) => readStory({ sql: this.ctx.storage.sql, budget, ai: ai as any }, id)).execute({ story_id: args.id }, null as any, null as any);
         return { result: JSON.parse((r.output as any)[0].text), control: r.control, usage: r.usage, used: budget.used };
       }
       if (kind === "fetch") return { status: (await io.fetch(args)).status };

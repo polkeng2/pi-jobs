@@ -6,11 +6,11 @@ import { logUsage, neuronGuard, READ_STORY_GUARD, type createBudget } from "./bu
 import { parseInterests } from "./interests.ts";
 import { afterCloseCutoff, writerSystem, writerUser } from "./prompts.ts";
 import { writeUp } from "./writer.ts";
+import type { Sql } from "./storage.ts";
 
 export const GLM = "@cf/zai-org/glm-4.7-flash";
 const SETTLED = ["written", "unreadable", "write_failed"];
 
-type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 export type ReadStoryDeps = {
   sql: Sql;
   budget: ReturnType<typeof createBudget>; // its fetch is the countedFetch
@@ -37,8 +37,7 @@ export async function readStory({ sql, budget, ai }: ReadStoryDeps, id: number) 
   }
 
   const date: string = s.digest_date;
-  const sum = (d: string) => q("SELECT COALESCE(SUM(neurons), 0) AS n FROM usage_log WHERE digest_date = ?", d)[0].n;
-  const stop = budget.used > READ_STORY_GUARD ? "budget" : neuronGuard(sum, date) === "neurons" ? "neurons" : null;
+  const stop = budget.used > READ_STORY_GUARD ? "budget" : neuronGuard(sql, date) === "neurons" ? "neurons" : null;
   if (stop) {
     q("UPDATE digests SET chunk_stop = ? WHERE date = ?", stop, date);
     return result({ story_id: id, status: "chunk_budget_spent" });
@@ -82,8 +81,8 @@ export async function readStory({ sql, budget, ai }: ReadStoryDeps, id: number) 
   return result({ story_id: id, status: "written", basis: article.basis, headline: w.headline }, usage);
 }
 
-/** `deps` is a function because the Worker builds its budget and counted AI binding per chunk. */
-export const readStoryTool = (deps: () => ReadStoryDeps) =>
+/** `run` is the Worker's method, which builds its budget and counted AI binding per chunk. */
+export const readStoryTool = (run: (id: number) => ReturnType<typeof readStory>) =>
   defineTool({
     name: "read_story",
     description:
@@ -94,5 +93,5 @@ export const readStoryTool = (deps: () => ReadStoryDeps) =>
     replay: "safe",
     executionMode: "sequential",
     outputLimits: { maxBytes: 1024 },
-    execute: (args) => readStory(deps(), args.story_id),
+    execute: (args) => run(args.story_id),
   });

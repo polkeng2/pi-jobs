@@ -1,6 +1,7 @@
 // Worker fetch router: guard, route, at most one RPC, render. No cloudflare:* imports, so it runs in Node tests.
 import { digestPage, emptyPage, messagePage, searchPage } from "./page.ts";
 import { safeHttpUrl } from "./html.ts";
+import { searchQuery } from "./storage.ts";
 
 type Access = { access?: { aud?: string } };
 type PageEnv = { ACCESS_AUD?: string; SIGNAL: { getByName(n: string): any } };
@@ -70,7 +71,7 @@ export async function route(req: Request, env: PageEnv, ctx: Access): Promise<Re
   if (path === "/search") {
     return only("GET", async () => {
       const q = (url.searchParams.get("q") ?? "").slice(0, 200);
-      const rows = q.split(/\s+/).some((t) => t.replaceAll('"', "")) ? await stub().searchStories(q) : null;
+      const rows = searchQuery(q) ? await stub().searchStories(q) : null;
       return htmlResponse((n) => searchPage(q, rows, n, today));
     });
   }

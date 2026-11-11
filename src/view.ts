@@ -1,8 +1,8 @@
 // Page RPC data: plain SQL on ctx.storage.sql, no pi, no fetch, no AI. Types follow docs/spec.md, RPC contracts.
 import { parseInterests } from "./interests.ts";
 import { SCORER } from "./scorer.ts";
+import type { Sql } from "./storage.ts";
 
-type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 
 export type StoryView = {
   id: number; subject: string | null; headline: string; summary: string;

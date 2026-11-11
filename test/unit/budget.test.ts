@@ -17,12 +17,10 @@ test("countedFetch counts every hop and follows at most 2 redirects", async () =
   expect(seen).toEqual([["https://a/", "manual"], ["https://b/", "manual"], ["https://c/", "manual"]]);
 });
 
-test("a third redirect is refused, relative Locations resolve, reset zeroes used", async () => {
+test("a third redirect is refused, relative Locations resolve", async () => {
   const b = createBudget(async () => redirect("/next"));
   await expect(b.fetch("https://a/x")).rejects.toThrow(/redirect/);
   expect(b.used).toBe(3);
-  b.reset();
-  expect(b.used).toBe(0);
 });
 
 test("at most 6 fetches run at once", async () => {
@@ -94,8 +92,12 @@ test("logUsage upserts one row per date, phase and model, adding calls, tokens a
 });
 
 test("neuron guard stops at 9,000 for the date and passes below", () => {
-  const sum = (n: number) => (date: string) => (date === "2026-11-03" ? n : 0);
-  expect(neuronGuard(sum(8_999.9), "2026-11-03")).toBe("ok");
-  expect(neuronGuard(sum(9_000), "2026-11-03")).toBe("neurons");
-  expect(neuronGuard(sum(9_000), "2026-11-04")).toBe("ok");
+  const { sql, transactionSync } = makeSql();
+  migrate(sql, transactionSync);
+  const log = (date: string, n: number) => sql.exec("INSERT INTO usage_log (digest_date, phase, model, calls, input_tokens, output_tokens, neurons) VALUES (?, ?, 'm', 1, 0, 0, ?)", date, String(n), n);
+  log("2026-11-03", 8_999.9);
+  expect(neuronGuard(sql, "2026-11-03")).toBe("ok");
+  log("2026-11-03", 0.1);
+  expect(neuronGuard(sql, "2026-11-03")).toBe("neurons");
+  expect(neuronGuard(sql, "2026-11-04")).toBe("ok");
 });

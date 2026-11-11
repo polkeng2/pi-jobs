@@ -35,11 +35,10 @@ export class Signal extends DurableObject<Env> {
 
   harness = new PiHarness({
     harness: ({ storage, context, onWake }) => {
-      const tool = readStoryTool(() => ({ sql: this.sql, budget: this.chunkRun().budget, ai: this.ai }));
       const registry = createRegistry();
       registry.install(defineExtension({
         name: "signal",
-        tools: [{ ...tool, execute: (args: { story_id: number }) => this.readStory(args.story_id) }],
+        tools: [readStoryTool((id) => this.readStory(id))],
         sections: [{ key: "orchestrator", tag: false, render: () => ORCHESTRATOR_SYSTEM }],
       }));
       const models = createModels();

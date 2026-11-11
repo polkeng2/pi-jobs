@@ -10,6 +10,12 @@ export type Row = Record<string, any>;
 export type Item = { vote: 1 | -1; date: string; score: number; passes: boolean };
 
 export const PRIVATE = "evals/private";
+/** POSTs JSON to the eval worker (EVAL_WORKER, default local) and returns the JSON answer. */
+export const workerPost: Post = async (path, body) => {
+  const r = await fetch((process.env.EVAL_WORKER ?? "http://localhost:8799") + path, { method: "POST", body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${path} ${r.status}`);
+  return r.json();
+};
 const CAP = 3000;
 const readJsonl = (file: string): Row[] =>
   existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];

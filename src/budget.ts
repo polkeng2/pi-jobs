@@ -36,15 +36,12 @@ export function logUsage(
 
 export const isSubrequestLimit = (e: unknown) => /too many subrequests/i.test(String((e as Error)?.message ?? e));
 
-/** `used` counts subrequests (fetch hops and AI calls) in memory; reset at chunk start. */
+/** `used` counts subrequests (fetch hops and AI calls) in memory. */
 export function createBudget(rawFetch: typeof fetch) {
   let live = 0;
   const waiting: (() => void)[] = [];
   const b = {
     used: 0,
-    reset() {
-      b.used = 0;
-    },
     async fetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
       // A freed slot goes straight to the oldest waiter (live stays), so a new caller cannot jump in.
       if (live >= MAX_CONCURRENT) await new Promise<void>((r) => waiting.push(r));
@@ -73,6 +70,6 @@ export function createBudget(rawFetch: typeof fetch) {
   return b;
 }
 
-/** `sumNeurons(date)` is SUM(neurons) FROM usage_log for that date. */
-export const neuronGuard = (sumNeurons: (date: string) => number, date: string) =>
-  sumNeurons(date) >= NEURON_LIMIT ? "neurons" : "ok";
+/** "neurons" once the date's usage_log has reached the daily allowance. */
+export const neuronGuard = (sql: { exec(q: string, ...p: any[]): { toArray(): any[] } }, date: string) =>
+  sql.exec("SELECT COALESCE(SUM(neurons), 0) AS n FROM usage_log WHERE digest_date = ?", date).toArray()[0].n >= NEURON_LIMIT ? "neurons" : "ok";

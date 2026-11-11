@@ -1,3 +1,4 @@
+import type { Sql } from "./storage.ts";
 // Ordered migrations as SQL strings. The version lives in `meta` because PRAGMA user_version is refused.
 // Append only: never edit a migration that has run.
 export const MIGRATIONS: string[] = [
@@ -120,7 +121,6 @@ CREATE TABLE usage_log (
 `,
 ];
 
-type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 
 /** Runs pending migrations synchronously in one transaction. Safe to call on every construction. */
 export function migrate(sql: Sql, transactionSync: <T>(fn: () => T) => T) {

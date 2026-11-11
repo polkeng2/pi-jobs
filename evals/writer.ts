@@ -7,7 +7,7 @@ import { parseInterests } from "../src/interests.ts";
 import { writerSystem, writerUser, WRITER_SYSTEM, type WriterInput } from "../src/prompts.ts";
 import { GLM } from "../src/read-story.ts";
 import type { WriteUp } from "../src/writer.ts";
-import { addSpend, allowance, PRIVATE, readCases, spentToday, type Post, type Row } from "./lib.ts";
+import { addSpend, allowance, PRIVATE, readCases, spentToday, workerPost, type Post, type Row } from "./lib.ts";
 
 const QUOTA = { tech: 5, markets: 3, earnings: 2 };
 const bucket = (s: Row): keyof typeof QUOTA => (s.kind === "earnings" ? "earnings" : s.section);
@@ -98,13 +98,7 @@ export async function run(o: { dir: string; post: Post; now: () => Date }) {
 }
 
 if (import.meta.main) {
-  const base = process.env.EVAL_WORKER ?? "http://localhost:8799";
-  const post: Post = async (path, body) => {
-    const r = await fetch(base + path, { method: "POST", body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(`${path} ${r.status}`);
-    return r.json();
-  };
-  const { code, out } = await run({ dir: PRIVATE, post, now: () => new Date() });
+  const { code, out } = await run({ dir: PRIVATE, post: workerPost, now: () => new Date() });
   console.log(out);
   process.exit(code);
 }
