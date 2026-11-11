@@ -11,7 +11,11 @@ export type Io = ReturnType<Signal["io"]>;
 type Phase = "fetch" | "score" | "write" | "publish" | "done";
 type Budget = ReturnType<typeof createBudget>;
 /** What every chunk gets. `fetch` and `ai` are counted by `budget`. */
-export type Deps = { sql: SqlStorage; budget: Budget; ai: Pick<Ai, "run">; now: () => number };
+export type Deps = {
+  sql: SqlStorage; budget: Budget; ai: Pick<Ai, "run">; now: () => number;
+  secrets: { finnhubKey?: string; edgarContact?: string };
+  transactionSync: <T>(fn: () => T) => T;
+};
 
 const utc = (date: string, hhmm: string) => Date.parse(`${date}T${hhmm}:00Z`);
 const DAY_MS = 86_400_000;
@@ -32,10 +36,12 @@ const setPhase = (sql: SqlStorage, date: string, phase: Phase) =>
   sql.exec("UPDATE digests SET phase = ? WHERE date = ?", phase, date);
 
 /** Runs the chunk for the Digest's current phase and says when to run again. */
-export async function runChunk(sql: SqlStorage, io: Io, date: string): Promise<LifecycleJobOutcome> {
+export async function runChunk(
+  sql: SqlStorage, io: Io, date: string, transactionSync: Deps["transactionSync"],
+): Promise<LifecycleJobOutcome> {
   const { phase } = sql.exec<{ phase: Phase }>("SELECT phase FROM digests WHERE date = ?", date).one();
   const budget = createBudget(io.fetch); // a fresh budget is the reset at chunk start
-  const d: Deps = { sql, budget, ai: budget.countAI(io.ai), now: io.now };
+  const d: Deps = { sql, budget, ai: budget.countAI(io.ai), now: io.now, secrets: io.secrets, transactionSync };
   const next = { rescheduleAt: io.now() + io.chunkDelayMs };
   try {
     switch (phase) {

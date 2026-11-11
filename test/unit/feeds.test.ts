@@ -69,8 +69,8 @@ const item = (t: string, link: string, hoursAgo: number, desc = "") =>
   `<item><title>${t}</title><link>${link}</link><description>${desc}</description><pubDate>${new Date(NOW - hoursAgo * 3_600_000).toUTCString()}</pubDate></item>`;
 
 function setup(routes: Record<string, string | number>, interests = "## Anti-topics\n- crypto\n") {
-  const { sql } = makeSql();
-  migrate(sql, (fn) => fn());
+  const { sql, transactionSync } = makeSql();
+  migrate(sql, transactionSync);
   sql.exec("INSERT INTO digests (date, interests, started_at) VALUES ('2026-11-03', ?, 0)", interests);
   const calls: string[] = [];
   const budget = createBudget(async (url) => {
@@ -80,7 +80,7 @@ function setup(routes: Record<string, string | number>, interests = "## Anti-top
     const v = hit?.[1] ?? 404;
     return typeof v === "number" ? new Response("", { status: v }) : new Response(v);
   });
-  return { sql, budget, calls, d: { sql: sql as any, budget, ai: { run: (() => {}) as any }, now: () => NOW } };
+  return { sql, budget, calls, d: { sql: sql as any, budget, ai: { run: (() => {}) as any }, now: () => NOW, secrets: {}, transactionSync } };
 }
 const stories = (sql: any) => sql.exec("SELECT feed, url, feed_heading FROM stories ORDER BY id").toArray();
 

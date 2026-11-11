@@ -1,5 +1,56 @@
 // String-only parsers (no DOM, no dependencies). Each returns Items; none throws on a missing field.
-export type Item = { url: string; heading: string; snippet: string; publishedAt: number | null };
+/** `articleUrl` (default `url`) and `kind` (default news) are set by EDGAR: the filing folder is what read_story resolves `index.json` against. */
+export type Item = {
+  url: string; heading: string; snippet: string; publishedAt: number | null;
+  articleUrl?: string; kind?: "news" | "earnings";
+};
+
+/** 8-K Items, constant: Clef and the orchestrator see only this text. 9.01 (exhibits only) is left out on purpose. */
+const EDGAR_ITEMS: Record<string, string> = {
+  "1.01": "Entry into a Material Definitive Agreement",
+  "1.02": "Termination of a Material Definitive Agreement",
+  "1.03": "Bankruptcy or Receivership",
+  "2.01": "Completion of Acquisition or Disposition of Assets",
+  "2.02": "Results of Operations and Financial Condition",
+  "2.03": "Creation of a Direct Financial Obligation",
+  "2.05": "Costs Associated with Exit or Disposal Activities",
+  "2.06": "Material Impairments",
+  "3.01": "Notice of Delisting or Failure to Satisfy a Continued Listing Rule",
+  "4.01": "Changes in Registrant's Certifying Accountant",
+  "4.02": "Non-Reliance on Previously Issued Financial Statements",
+  "5.01": "Changes in Control of Registrant",
+  "5.02": "Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers",
+  "7.01": "Regulation FD Disclosure",
+  "8.01": "Other Events",
+};
+
+/** `data.sec.gov/submissions` JSON: 8-Ks with a known Item, one Item per filing (2.02 wins). */
+export function parseEdgar(json: string): Item[] {
+  const r = JSON.parse(json);
+  const f = r.filings?.recent;
+  if (!f) return [];
+  const items: Item[] = [];
+  (f.form as string[]).forEach((form, i) => {
+    const nums = String(f.items[i] ?? "").split(",").map((s) => s.trim()).filter((n) => n in EDGAR_ITEMS);
+    if (form !== "8-K" || !nums.length) return;
+    const n = nums.includes("2.02") ? "2.02" : nums[0]!;
+    const url = `https://www.sec.gov/Archives/edgar/data/${Number(r.cik)}/${String(f.accessionNumber[i]).replaceAll("-", "")}/`;
+    items.push({
+      url, articleUrl: url, kind: n === "2.02" ? "earnings" : "news", heading: `8-K Item ${n}: ${EDGAR_ITEMS[n]}`,
+      snippet: "", publishedAt: date(f.acceptanceDateTime[i]),
+    });
+  });
+  return items;
+}
+
+/** Finnhub `/company-news`. */
+export function parseFinnhubNews(json: string): Item[] {
+  const rows: any[] = JSON.parse(json);
+  return rows.filter((r) => r.headline && r.url).map((r) => ({
+    url: r.url, heading: String(r.headline), snippet: String(r.summary ?? "").slice(0, SNIPPET_CHARS),
+    publishedAt: r.datetime ? r.datetime * 1000 : null,
+  }));
+}
 
 const SNIPPET_CHARS = 600;
 const ENTITIES: Record<string, string> = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
