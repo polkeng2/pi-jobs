@@ -1,5 +1,6 @@
 // Page RPC data: plain SQL on ctx.storage.sql, no pi, no fetch, no AI. Types follow docs/spec.md, RPC contracts.
 import { parseInterests } from "./interests.ts";
+import { SCORER } from "./scorer.ts";
 
 type Sql = { exec(q: string, ...p: any[]): { toArray(): any[] } };
 
@@ -83,15 +84,14 @@ export function exportVotes(sql: Sql): string {
   return [...ints, ...rows.map(storyLine)].map((l) => l + "\n").join("");
 }
 
-// ponytail: thresholds mirrored from the Clef section (55, 35 strong move, gate 0.4) until src/scorer.ts exists; import SCORER then.
 const NEAR = 15;
 /** JSONL: up to 30 `below` Stories per Section within 15 points under the threshold, plus Tech with is_news in 0.1-0.4. */
 export function exportNearMiss(sql: Sql): string {
   const pick = (where: string) =>
     sql.exec(`SELECT ${STORY_FIELDS} ${FROM} WHERE s.status = 'below' AND s.clef_answers IS NOT NULL AND ${where}
               ORDER BY s.signal_score DESC LIMIT 30`).toArray();
-  const tech = pick(`s.section = 'tech' AND (s.signal_score >= ${55 - NEAR}
-    OR json_extract(s.clef_answers, '$.is_news.noul') BETWEEN 0.1 AND 0.4)`);
-  const markets = pick(`s.section = 'markets' AND s.signal_score >= (CASE WHEN COALESCE(q.strong_move, 0) = 1 THEN 35 ELSE 55 END) - ${NEAR}`);
+  const tech = pick(`s.section = 'tech' AND (s.signal_score >= ${SCORER.tech.threshold - NEAR}
+    OR json_extract(s.clef_answers, '$.is_news.noul') BETWEEN 0.1 AND ${SCORER.tech.gate})`);
+  const markets = pick(`s.section = 'markets' AND s.signal_score >= (CASE WHEN COALESCE(q.strong_move, 0) = 1 THEN ${SCORER.markets.strongThreshold} ELSE ${SCORER.markets.threshold} END) - ${NEAR}`);
   return [...tech, ...markets].map((r) => storyLine(r) + "\n").join("");
 }
